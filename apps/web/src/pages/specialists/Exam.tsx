@@ -73,7 +73,7 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   const block = liveRunBlock(agent.task, agent.acquitted, refusal);
   const date = exam?.endedAt ?? null;
   const pass = exam?.status === "PASSED";
-  useEffect(() => { announce(!available ? "Exam coming." : recordLoading ? "Loading exam record." : recordError ? "Exam record unavailable." : exam ? `Exam ${exam.status.toLowerCase()}.` : "Ready to take the exam."); }, [available, recordLoading, recordError, exam?.status, announce]);
+  useEffect(() => { announce(!available ? "Exam coming." : recordLoading ? "Loading exam record." : recordError ? "Exam record unavailable." : exam ? `Exam ${exam.status.toLowerCase()}.` : agent.seeded ? "Seeded agent. It did not sit an exam." : "Ready to take the exam."); }, [available, recordLoading, recordError, exam?.status, agent.seeded, announce]);
   // A passed exam hands the keyboard straight to the next step, unless the owner is focused elsewhere.
   useEffect(() => {
     if (!pass || !agent.acquitted) return;
@@ -87,8 +87,8 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
     <div className="owner-actions"><Link className="btn" to="/specialists">Plug in Code fixer</Link></div></section>;
   if (recordLoading) return <section className="exam-record exam-loading" aria-busy="true"><h1>Reading the exam record</h1><SkeletonCard lines={5} /></section>;
   if (recordError !== null) return <section><h1>Exam record unavailable</h1><LoadFailed error={recordError} onRetry={() => setReadTick((n) => n + 1)} primary /></section>;
-  if (!exam && agent.acquitted) return <section className="exam-empty"><h1>No stored exam record</h1>
-    <p>Acquitted, but no stored exam is available. An example is not this agent’s record.</p>
+  if (!exam && agent.acquitted) return <section className="exam-empty"><h1>{agent.seeded ? "Seeded agent" : "No stored exam record"}</h1>
+    <p>{agent.seeded ? "Seeded agent. It did not sit an exam." : "Acquitted, but no stored exam is available. An example is not this agent’s record."}</p>
     <div className="owner-actions"><Link to={`/specialists/orders/${encodeURIComponent(agent.id)}`} className="btn">Set standing orders</Link></div></section>;
   if (!exam) return <section className="exam-before"><h1>Take the exam</h1><p>Pass to bid on code jobs.</p>
     {sample && <details className="exam-sample"><summary>Example passed exam · Simulated</summary>

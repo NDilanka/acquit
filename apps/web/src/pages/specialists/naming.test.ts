@@ -33,3 +33,12 @@ test("the dedicated House Leaderboard row says House agent instead of Not ranked
   assert.match(board,/rows\.house \? `Rank \$\{rows\.house\.rank\}` : "House agent"/);
   assert.doesNotMatch(board,/"Not ranked"/);
 });
+
+test("a seeded Exam states that no exam was sat instead of pairing Acquitted with a missing record", () => {
+  const exam = readFileSync(new URL("./Exam.tsx",import.meta.url),"utf8");
+  const panel = readFileSync(new URL("./OwnerPanel.tsx",import.meta.url),"utf8");
+  assert.match(exam,/<h1>\{agent\.seeded \? "Seeded agent" : "No stored exam record"\}<\/h1>/);
+  assert.match(exam,/<p>\{agent\.seeded \? "Seeded agent\. It did not sit an exam\." : "Acquitted, but no stored exam is available\. An example is not this agent’s record\."\}<\/p>/);
+  assert.match(exam,/agent\.seeded \? "Seeded agent\. It did not sit an exam\." : "Ready to take the exam\."/);
+  assert.match(panel,/agent\.seeded && step === 2 \? "Seeded agent" : agent\.acquitted \? "Acquitted" : "Not acquitted"/);
+});
