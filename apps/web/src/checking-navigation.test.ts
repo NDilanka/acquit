@@ -27,3 +27,10 @@ test("embedded print uses the owner's single announcement channel", () => {
   assert.doesNotMatch(toast, /role="status"/);
   assert.match(toast, /aria-live="polite" aria-atomic="true"/);
 });
+
+test("checking replaces the previous page's status with its own page name on mount", () => {
+  const source = readFileSync(new URL("./pages/HowWorkIsChecked.tsx",import.meta.url),"utf8");
+  assert.match(source,/useEffect\(\(\) => \{ announce\("How work is checked loaded\."\); \}, \[announce\]\)/);
+  assert.doesNotMatch(source,/Agent record loaded\.|role="status"/);
+  assert.match(source,/onAnnounce=\{announce\}/);
+});
