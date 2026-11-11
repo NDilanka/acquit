@@ -38,8 +38,19 @@ import { changeLogFor } from "./change-chain.ts";
 // The api is typed against Studio's default widget registry; the state it holds is this app's.
 const dashboardState = (api: AgStudioApi) => api.getState() as unknown as DashboardState;
 
-const widgetCatalogue = (api: AgStudioApi) =>
-  api.getAiContext().catalogue().map((entry) => ({ type: entry.type, description: entry.description }));
+/**
+ * The api's widget catalogue, narrowed to the types this dashboard publishes. Studio's catalogue lists
+ * every dashboard's widgets, so an unfiltered list would offer the model another dashboard's types. An
+ * unknown dashboard publishes none, the same as the add guard refuses every type then.
+ */
+const widgetCatalogue = (api: AgStudioApi, dashboard: DashboardId | undefined) => {
+  const allowed: readonly string[] = dashboard ? [...WIDGET_IDS[dashboard], ...NATIVE_TYPES[dashboard]] : [];
+  return api
+    .getAiContext()
+    .catalogue()
+    .filter((entry) => allowed.includes(entry.type))
+    .map((entry) => ({ type: entry.type, description: entry.description }));
+};
 
 export const NEW_WIDGET_WORKFLOW = `## New widgets on this dashboard
 The widget you were given may not be on the grid yet. If view_widget shows it does not exist, add it yourself:
@@ -125,9 +136,8 @@ function honestDelegate(
       const widgetId = delegatedWidgetId(call.args);
       const unplaced = widgetId !== undefined && !widgetPlaced(dashboardState(api), widgetId);
       if (ranOk && !unplaced) return result;
-      const head = unplaced
-        ? `The delegated widget ${widgetId} is not on the dashboard's grid with a placement of its own`
-        : "The delegate did not complete";
+      // The reader sees these words through the ledger agent's reply, so they name no widget id.
+      const head = unplaced ? "The widget could not be placed on the dashboard" : "The delegate did not complete";
       const detail =
         (ranOk && runs.failures.get(call.toolCallId)) ||
         (result.success ? result.response : result.issues.map((issue) => issue.message).join("; "));
@@ -143,8 +153,8 @@ function honestDelegate(
         (undo?.success ? removed : kept).push(id);
       }
       const rollback =
-        (removed.length ? ` The partially added widget ${removed.join(", ")} was removed again.` : "") +
-        (kept.length ? ` The partially added widget ${kept.join(", ")} could not be removed and is still on the dashboard.` : "");
+        (removed.length ? " The partly added widget was removed again." : "") +
+        (kept.length ? " The partly added widget could not be removed and is still on the dashboard." : "");
       return {
         success: false,
         issues: [{ message: `${head}${detail ? `: ${detail}` : "."}${rollback}` }],
@@ -212,7 +222,7 @@ function dashboardAdd(
       if (typeof type !== "string" || !allowed.includes(type)) {
         return {
           success: false,
-          issues: [{ message: `Widget type ${JSON.stringify(type)} is not on this dashboard. Its widget types are: ${allowed.join(", ") || "none"}.` }],
+          issues: [{ message: `Widget type ${JSON.stringify(type)} is not on this dashboard. Use one of these widget types instead: ${allowed.join(", ") || "none"}, or report that the widget cannot be made.` }],
         };
       }
       if (typeof widgetId !== "string") {
@@ -242,8 +252,8 @@ function dashboardAdd(
       );
       const ending = undo?.success ? ", so it was removed again." : ", and it could not be removed and is still on the dashboard.";
       const head = isPlaced
-        ? `Widget ${widgetId} was placed but its tile never rendered on the dashboard`
-        : `Studio kept no placement for widget ${widgetId} on the grid`;
+        ? "The widget was placed but its tile never rendered on the dashboard"
+        : "The widget was not placed on the dashboard grid";
       return { success: false, issues: [{ message: `${head}${ending}` }] };
     },
   };
@@ -286,7 +296,7 @@ export function createAskLedgerHarness(
         description: sample
           ? "Answers questions about the sample escrow book, which is simulated sample data, from read-only tools."
           : "Answers questions about Acquit's escrow ledger and PayPal's view of it, from read-only tools.",
-        instructions: (ctx) => askInstructions(widgetCatalogue(ctx.api), sample ? SAMPLE_ASK_INSTRUCTIONS : ASK_INSTRUCTIONS),
+        instructions: (ctx) => askInstructions(widgetCatalogue(ctx.api, deps?.dashboard), sample ? SAMPLE_ASK_INSTRUCTIONS : ASK_INSTRUCTIONS),
         maxTurns: ASK_MAX_TURNS,
         tools: (ctx) => [...ledgerTools(ctx.api), honestDelegate(ctx.tools.delegateTo(["widget", "data", "page"]), { outcomes, failures }, ctx.api, ctx.studio)],
         adapter,
