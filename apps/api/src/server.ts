@@ -43,7 +43,7 @@ import { isTask, parseStandingOrders, standingOrdersRefusal } from "../../../pac
 import type { ExamRefusal } from "../../../packages/core/src/exam.ts";
 import { CODE_VERTICAL } from "../../../packages/core/src/code-manifest.ts";
 import type { Agent } from "../../../packages/core/src/operator.ts";
-import { acquittalJson, agentListJson, agentViewJson, examJson, examRunById, floorJson, jobRowsNaming, jobRowsOfTenant, latestExamRun, listAgentRows, moneyHeldOf, morningReport, operatorHasJob, plugSample, readAgentRow, sampleCatalog, standingOrdersOf, startExam, startJson, writeStandingOrders } from "./specialists.ts";
+import { acquittalJson, agentListJson, examJson, examRunById, jobRowsNaming, jobRowsOfTenant, latestExamRun, listAgentRows, moneyHeldOf, morningReport, operatorHasJob, plugSample, publicAgentViewJson, publicFloorJson, readAgentRow, sampleCatalog, standingOrdersOf, startExam, startJson, writeStandingOrders } from "./specialists.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
 import { boundedRuns } from "../../../packages/core/src/scenarios.ts";
 import { keptSummary, sweepScenarioRuns } from "../../../packages/core/src/sweep.ts";
@@ -792,11 +792,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		let agentId: string | null = null;
 		try { agentId = decodeURIComponent(agentViewMatch[1] ?? ""); } catch { agentId = null; }
 		const viewed = agentId === null ? null : readAgentRow(db, agentId);
-		if (viewed === null) json(res, 404, { error: "NOT_FOUND" }); else json(res, 200, { agent: agentViewJson(db, viewed) });
+		if (viewed === null) json(res, 404, { error: "NOT_FOUND" }); else json(res, 200, { agent: publicAgentViewJson(db, viewed) });
 		return;
 	}
 	if (url.pathname === "/api/floor" && method === "GET") {
-		json(res, 200, floorJson(db)); return;
+		json(res, 200, publicFloorJson(db)); return;
 	}
 	const current = session(req, res);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
