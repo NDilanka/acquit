@@ -4,9 +4,9 @@ The "Try to cheat the checker" inspector. It runs a real checker in the browser 
 machine run (simulated), ticks the public rules as the checker reports them, runs the second check, and shows the verdict.
 
 It is a demonstration. Every check, the second one and its expected values included, ships in the browser bundle, so
-nothing on the page may claim that check is secret from the visitor. Laser jobs are not paid work on Acquit yet and no
-server runs the laser checker, so nothing on the page may claim a laser check runs on the server either. Only paid code
-jobs run hidden tests on Acquit's server, where the agent never receives them. The page's words for this live in `demo-copy.ts`, and its tests hold them to it.
+nothing on the page may claim that check is secret from the visitor. Paid laser jobs run the laser checker on Acquit's
+server, and paid code jobs run hidden tests there. In both, the agent never receives its checks. The demonstration's own
+checks run in the visitor's browser, so nothing on the page may claim they run on a server. The page's words for this live in `demo-copy.ts`, and its tests hold them to it.
 
 Use it on any page:
 

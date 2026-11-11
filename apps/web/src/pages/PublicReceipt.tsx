@@ -8,6 +8,11 @@ import { digestOfHiddenCases } from "../receipt-digest";
 import {
   attemptLine,
   digestVerdict,
+  isLaserReceipt,
+  LASER_DELIVERY_PATH,
+  LASER_WORDS,
+  LASER_WORKFLOW_NAME,
+  laserVerdictLine,
   moneyLines,
   operatorLine,
   outcomeLine,
@@ -68,6 +73,7 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
   if (load.kind === "failed") return <div className="alert">{load.message}</div>;
 
   const r = load.receipt;
+  const laser = isLaserReceipt(r);
   const verdict = digestVerdict(r.hiddenCases, check);
   const committed = r.hiddenCases?.committedAt ? ` Committed ${utc(r.hiddenCases.committedAt)}, before the work started.` : "";
   const sum = sumCheck(r.money);
@@ -116,57 +122,85 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
 
       <section className="card pad">
         <h2>Verdicts</h2>
-        <p>
-          Visible tests {r.verdict.frozen.passed} of {r.verdict.frozen.expected}, hidden tests {r.verdict.hidden.passed} of{" "}
-          {r.verdict.hidden.expected}. Attempts used {r.verdict.attemptsUsed} of {r.verdict.attemptsAllowed}.
-        </p>
-        <ol>
-          {r.verdict.history.map((attempt) => (
-            <li key={attempt.ordinal}>{attemptLine(attempt, r.verdict.attemptsAllowed)}</li>
-          ))}
-        </ol>
-        <p className="muted">
-          Pull request #{r.verdict.pullRequest}, checked tree <IdChip value={r.verdict.mergeCommit} />
-        </p>
-      </section>
-
-      <section className="card pad">
-        <h2>Hidden cases</h2>
-        {r.hiddenCases === null ? (
-          <p className="muted">
-            This job ran the fixture's own hidden tests. They are shared by every account, so they are never published.
-          </p>
+        {laser ? (
+          <>
+            <p>{laserVerdictLine(r.verdict)}</p>
+            <ol>
+              {r.verdict.history.map((attempt) => (
+                <li key={attempt.ordinal}>{attemptLine(attempt, r.verdict.attemptsAllowed, LASER_WORDS)}</li>
+              ))}
+            </ol>
+            <p className="muted">
+              Workflow: {LASER_WORKFLOW_NAME}. Delivered file: <span className="mono">{LASER_DELIVERY_PATH}</span>.
+            </p>
+            <p className="muted">
+              Delivered commit <IdChip value={r.verdict.mergeCommit} />
+            </p>
+          </>
         ) : (
           <>
             <p>
-              Committed digest <IdChip value={r.hiddenCases.committedDigest} />.{committed}
+              Visible tests {r.verdict.frozen.passed} of {r.verdict.frozen.expected}, hidden tests {r.verdict.hidden.passed} of{" "}
+              {r.verdict.hidden.expected}. Attempts used {r.verdict.attemptsUsed} of {r.verdict.attemptsAllowed}.
             </p>
-            <p>
-              {verdict === "MATCH" && <b>Match. Your browser recomputed this digest from the revealed cases and salt.</b>}
-              {verdict === "NO_MATCH" && <b className="alert">No match. The revealed cases do not produce the committed digest.</b>}
-              {verdict === "PENDING" && <span className="muted">Checking the revealed cases in your browser…</span>}
-              {verdict === "UNAVAILABLE" && (
-                <span className="muted">This browser cannot run the SHA-256 check here. Web Crypto needs https or localhost.</span>
-              )}
-              {verdict === "NOT_REVEALED" && (
-                <span className="muted">
-                  The cases are not revealed here, so this browser cannot check them. The commitment above still stands.
-                </span>
-              )}
+            <ol>
+              {r.verdict.history.map((attempt) => (
+                <li key={attempt.ordinal}>{attemptLine(attempt, r.verdict.attemptsAllowed)}</li>
+              ))}
+            </ol>
+            <p className="muted">
+              Pull request #{r.verdict.pullRequest}, checked tree <IdChip value={r.verdict.mergeCommit} />
             </p>
-            {r.hiddenCases.revealed !== null && (
-              <ol>
-                {r.hiddenCases.revealed.cases.map((hidden) => (
-                  <li key={hidden.id}>
-                    <span className="mono">{hidden.target.module}</span> {hidden.target.export}({JSON.stringify(hidden.args)}) is{" "}
-                    <span className="mono">{JSON.stringify(hidden.expected)}</span>
-                  </li>
-                ))}
-              </ol>
-            )}
           </>
         )}
       </section>
+
+      {laser ? (
+        <section className="card pad">
+          <h2>Sealed checks</h2>
+          <p>
+            The sealed checks stay on Acquit's server. The agent never receives them, so this page shows only how many passed.
+          </p>
+        </section>
+      ) : (
+        <section className="card pad">
+          <h2>Hidden cases</h2>
+          {r.hiddenCases === null ? (
+            <p className="muted">
+              This job ran the fixture's own hidden tests. They are shared by every account, so they are never published.
+            </p>
+          ) : (
+            <>
+              <p>
+                Committed digest <IdChip value={r.hiddenCases.committedDigest} />.{committed}
+              </p>
+              <p>
+                {verdict === "MATCH" && <b>Match. Your browser recomputed this digest from the revealed cases and salt.</b>}
+                {verdict === "NO_MATCH" && <b className="alert">No match. The revealed cases do not produce the committed digest.</b>}
+                {verdict === "PENDING" && <span className="muted">Checking the revealed cases in your browser…</span>}
+                {verdict === "UNAVAILABLE" && (
+                  <span className="muted">This browser cannot run the SHA-256 check here. Web Crypto needs https or localhost.</span>
+                )}
+                {verdict === "NOT_REVEALED" && (
+                  <span className="muted">
+                    The cases are not revealed here, so this browser cannot check them. The commitment above still stands.
+                  </span>
+                )}
+              </p>
+              {r.hiddenCases.revealed !== null && (
+                <ol>
+                  {r.hiddenCases.revealed.cases.map((hidden) => (
+                    <li key={hidden.id}>
+                      <span className="mono">{hidden.target.module}</span> {hidden.target.export}({JSON.stringify(hidden.args)}) is{" "}
+                      <span className="mono">{JSON.stringify(hidden.expected)}</span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </>
+          )}
+        </section>
+      )}
 
       {ids.length > 0 && (
         <section className="card pad money">
@@ -185,16 +219,18 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
         </section>
       )}
 
-      <section className="card pad">
-        <h2>Verifier score card</h2>
-        {scoreCardLines(r.scoreCard).map((line) => (
-          <p key={line}>{line}</p>
-        ))}
-        <small className="muted">The code verifier's card as its CI run last verified it. The same card covers every job; it is not a per-job record.</small>
-        <p>
-          <Link to="/verifiers">How this verifier is tested</Link>
-        </p>
-      </section>
+      {!laser && (
+        <section className="card pad">
+          <h2>Verifier score card</h2>
+          {scoreCardLines(r.scoreCard).map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+          <small className="muted">The code verifier's card as its CI run last verified it. The same card covers every job; it is not a per-job record.</small>
+          <p>
+            <Link to="/verifiers">How this verifier is tested</Link>
+          </p>
+        </section>
+      )}
     </>
   );
 }

@@ -35,7 +35,7 @@ export function countWords(count: number, singular: string): string {
 /** The note under a simulated machine's name. Only the simulated machines carry it. */
 export function simulatedNote(task: Task): string | null {
   if (task === "print-fdm") return "Simulated · No real hardware";
-  if (task === "laser-cut") return "Simulated · coming";
+  if (task === "laser-cut") return "Simulated · No real hardware";
   return null;
 }
 
