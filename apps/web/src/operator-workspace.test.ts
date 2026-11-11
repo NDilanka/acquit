@@ -132,7 +132,7 @@ test("a pending bid keeps its job in the open list and adds no work", () => {
 });
 
 test("a locked job in escrow counts at the operator's net and reads Deliver", () => {
-  // A 40000 bid is held at 42000 from the client, and the operator's net after the 10% operator fee is 36000.
+  // The server supplies the operator's held amount; this fixture supplies 36000.
   const ws = buildOperatorWorkspace(snapshot([job(LOCKED)], { escrow: [{ jobId: "job_work", cents: 36000 }] }));
   assert.deepEqual(ws.open, []);
   assert.equal(ws.mine.length, 1);
@@ -199,4 +199,11 @@ test("the operator's awaiting-review earnings say when the money releases, with 
   // The suite has no DOM, so the sentence is checked in the page's source, as the job page tests do.
   const source = readFileSync(new URL("./pages/operator/Earnings.tsx", import.meta.url), "utf8");
   assert.ok(source.includes("Released when the client approves or the review window closes."));
+});
+
+test("My Work explains the client fee and actual processing fee, not a percentage operator fee", () => {
+  const source = readFileSync(new URL("./pages/operator/MyWork.tsx", import.meta.url), "utf8").replace(/\s+/g, " ");
+  assert.ok(source.includes("The client pays the bid plus a fee. Acquit keeps a fixed fee; PayPal's actual processing fee comes out of the same payment. You receive the rest."));
+  assert.match(source, /· PayPal sandbox/);
+  assert.doesNotMatch(source, /10%|price less|operator fee/i);
 });
