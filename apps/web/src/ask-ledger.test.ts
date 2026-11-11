@@ -230,8 +230,8 @@ test("a missing model key fails the turn with its code, and the stream ends empt
 test("a rate limit and an out-of-budget turn fail the turn with their own codes and wording", async () => {
   for (const [code, wording] of [
     ["MODEL_RATE_LIMITED", /rate limited.*slow down/],
-    // A 429 for MODEL_BUDGET is either the shared budget or an operator's own turn limit, so the copy names neither.
-    ["MODEL_BUDGET", /out of model budget/],
+    // A 429 for MODEL_BUDGET with no detail token the copy knows keeps the generic copy, which names no window and no budget.
+    ["MODEL_BUDGET", /could not run right now/],
   ] as const) {
     const fetch = fakeFetch(429, { error: code, detail: "slow down" });
     const response = await askLedgerAdapter({ fetch, newId: () => "t4", now: () => 1 }).executeTurn(request(conversation)).complete;
@@ -241,21 +241,25 @@ test("a rate limit and an out-of-budget turn fail the turn with their own codes 
   }
 });
 
-test("a budget refusal names the limit that ran out when the API says which, and keeps the shared copy when it does not", async () => {
+test("a budget refusal names the window that ran out, shared or per visitor, and never says the budget is out", async () => {
   for (const [detail, wording] of [
     ["per-minute", /too many questions in a minute/],
     ["per-day", /today's question limit/],
     ["busy", /busy with other questions/],
+    ["per-key-day", /allowance for this account or network is used up/],
+    ["shared-minute", /per-minute limit, which other visitors share/],
+    ["shared-day", /daily limit, which other visitors share/],
   ] as const) {
     const fetch = fakeFetch(429, { error: "MODEL_BUDGET", detail });
     const response = await askLedgerAdapter({ fetch, newId: () => "t6", now: () => 1 }).executeTurn(request(conversation)).complete;
     assert.equal(response.error?.code, "MODEL_BUDGET");
     assert.match(response.error?.message ?? "", wording, `the ${detail} refusal names its limit`);
-    assert.doesNotMatch(response.error?.message ?? "", /out of model budget/);
+    assert.doesNotMatch(response.error?.message ?? "", /budget/i, `the ${detail} refusal never says the budget is out`);
   }
-  const shared = fakeFetch(429, { error: "MODEL_BUDGET", detail: "the shared model budget is spent" });
-  const sharedResponse = await askLedgerAdapter({ fetch: shared, newId: () => "t7", now: () => 1 }).executeTurn(request(conversation)).complete;
-  assert.match(sharedResponse.error?.message ?? "", /out of model budget/, "a shared budget refusal carries no token, so it keeps the generic copy");
+  const unknown = fakeFetch(429, { error: "MODEL_BUDGET", detail: "the model-call budget lock never freed" });
+  const unknownResponse = await askLedgerAdapter({ fetch: unknown, newId: () => "t7", now: () => 1 }).executeTurn(request(conversation)).complete;
+  assert.match(unknownResponse.error?.message ?? "", /could not run right now/, "a refusal with no token the copy knows keeps the generic copy");
+  assert.doesNotMatch(unknownResponse.error?.message ?? "", /budget/i);
 });
 
 test("a cancelled turn resolves as cancelled rather than rejecting", async () => {

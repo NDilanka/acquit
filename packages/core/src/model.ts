@@ -11,7 +11,7 @@ import type { FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { boundedDetail } from "./verifier.ts";
-import { PER_KEY_DAY_DETAIL } from "./turn-limit.ts";
+import { PER_KEY_DAY_DETAIL, SHARED_DAY_DETAIL, SHARED_MINUTE_DETAIL } from "./turn-limit.ts";
 
 /** The providers the switch can name. `fireworks` is the default: the product's own model calls (Ask and
  * scoping) run through the fetch-based chat-completions client in `llm.ts`. `droid` and `openrouter` keep
@@ -261,7 +261,9 @@ async function releaseBudgetLock(lockPath: string, token: string): Promise<void>
  * are always re-read inside the lock, and that re-read decides; the unlocked read first only
  * spares the lock when the answer is already no. A waiter that never gets the lock refuses with
  * BUDGET too, and that refusal carries the message naming the lock path and the operator's
- * recovery command. */
+ * recovery command. A window's refusal carries the window's token as its detail: SHARED_MINUTE_DETAIL or
+ * SHARED_DAY_DETAIL when the shared budget or the call's group is full in that window, PER_KEY_DAY_DETAIL when one
+ * key's day in the group is full. */
 export async function reserveModelCall(log: ModelCallLog, call: Omit<ModelCallRecord, "phase">, allowance?: ModelCallAllowance):
 Promise<{ ok: true } | { ok: false; reason: "BUDGET"; detail?: string }> {
 	const at = Date.parse(call.at);
@@ -271,12 +273,12 @@ Promise<{ ok: true } | { ok: false; reason: "BUDGET"; detail?: string }> {
 	const overBudget = async (): Promise<ReturnType<typeof refused> | null> => {
 		const starts = (await log.records()).filter(record => record.phase === "START");
 		const within = (records: readonly ModelCallRecord[], span: number) => records.filter(record => Date.parse(record.at) > at - span).length;
-		if (within(starts, 60_000) >= MODEL_CALLS_MINUTE - 1 || within(starts, 86_400_000) >= MODEL_CALLS_DAY - 1) return refused();
+		if (within(starts, 60_000) >= MODEL_CALLS_MINUTE - 1) return refused(SHARED_MINUTE_DETAIL);
+		if (within(starts, 86_400_000) >= MODEL_CALLS_DAY - 1) return refused(SHARED_DAY_DETAIL);
 		if (allowance?.callers.includes(call.caller) === true) {
 			const group = starts.filter(record => allowance.callers.includes(record.caller));
-			if (within(group, 60_000) >= allowance.perMinute || within(group, 86_400_000) >= allowance.perDay) {
-				return refused(`the ${allowance.name} allowance inside the shared model budget is spent for now`);
-			}
+			if (within(group, 60_000) >= allowance.perMinute) return refused(SHARED_MINUTE_DETAIL);
+			if (within(group, 86_400_000) >= allowance.perDay) return refused(SHARED_DAY_DETAIL);
 			// Each key the call names counts only the group's own calls that named it: a key at its day ceiling refuses the call.
 			const perKeyDay = allowance.perKeyDay;
 			const keyed = (key: string) => group.filter(record => record.keys?.includes(key) === true);

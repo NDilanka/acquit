@@ -245,13 +245,17 @@ export function askErrorText(error: ApiError): string {
       return "Ask the ledger has no model key on the server, so it cannot answer yet.";
     case "MODEL_RATE_LIMITED":
       return `The model is rate limited right now. Try again in a minute.${detail}`;
-    // A 429 for MODEL_BUDGET carries the limit that ran out when the API can say which one (a turn limit, or the busy
-    // sample book). A shared model budget refusal carries no token, so it keeps the generic copy, which names no limit.
+    // A 429 for MODEL_BUDGET carries the window that ran out when the API can say which one: a turn limit, the busy sample
+    // book, or a window of the shared model budget (shared with other visitors, so no copy says the budget is out). A
+    // refusal with no token this copy knows, such as a budget lock that never freed, keeps the generic copy.
     case "MODEL_BUDGET":
       if (error.detail === "per-minute") return "You have asked too many questions in a minute. Try again in a minute.";
       if (error.detail === "per-day") return "You have reached today's question limit. Try again in 24 hours.";
       if (error.detail === "busy") return "Sample Ask is busy with other questions. Try again in a moment.";
-      return "Ask the ledger is out of model budget for now. Try again later.";
+      if (error.detail === "per-key-day") return "The Ask allowance for this account or network is used up for today. Try again in 24 hours.";
+      if (error.detail === "shared-minute") return "Ask has reached its per-minute limit, which other visitors share. Try again in a minute.";
+      if (error.detail === "shared-day") return "Ask has reached its daily limit, which other visitors share. Try again in 24 hours.";
+      return "Ask could not run right now. Try again in a minute.";
     case "MODEL_PROVIDER_ERROR":
       return `The model provider failed to answer.${detail}`;
     case "MODEL_TIMEOUT":

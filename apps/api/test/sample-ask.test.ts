@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { ASK_SAMPLE_TURN_CONTRACT, askLedgerTurn, buildAskPrompt, OPERATOR_TURNS_PER_MINUTE, type AskModelResult } from "../src/ask.ts";
 import { MODEL_CALLS_MINUTE, modelCallLog } from "../../../packages/core/src/model.ts";
 import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_ASK_TOOL_NAMES, SAMPLE_CALLER, SAMPLE_LABEL, SAMPLE_MAX_IN_FLIGHT, SAMPLE_MODEL_CALLS_PER_KEY_DAY, SAMPLE_TURNS_PER_DAY, SAMPLE_TURNS_PER_MINUTE, withDeadline } from "../src/sample-ask.ts";
-import { TURN_LIMIT_DAY_DETAIL, TURN_LIMIT_MINUTE_DETAIL } from "../../../packages/core/src/turn-limit.ts";
+import { SHARED_MINUTE_DETAIL, TURN_LIMIT_DAY_DETAIL, TURN_LIMIT_MINUTE_DETAIL } from "../../../packages/core/src/turn-limit.ts";
 import { sampleExplain } from "../src/sample-book.ts";
 
 const FORGED_REAL_IDS = ["job_real_paid", "job_real_refund", "REFUND_REAL_SENTINEL", "CAP-REAL_SENTINEL", "PAYOUT_REAL_SENTINEL", "rcpt_real", "SAMPLE-ORDER-02"];
@@ -223,7 +223,7 @@ test("the sample's ceiling inside the shared budget refuses a sample turn while 
 			return { ok: true, text: '{"message":"Nothing is held.","calls":[]}', sessionId: null, factoryCredits: null };
 		};
 		const sample = await askLedgerTurn({ model, callLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE }, { messages, tools: sampleAskToolList(), scope: "SAMPLE" });
-		assert.deepEqual(sample, { ok: false, reason: "MODEL_BUDGET", detail: "the sample allowance inside the shared model budget is spent for now" });
+		assert.deepEqual(sample, { ok: false, reason: "MODEL_BUDGET", detail: SHARED_MINUTE_DETAIL }, "the sample's full minute names the shared minute");
 		assert.equal(modelCalls, 0, "a refused sample turn runs no model call");
 		const platform = await askLedgerTurn({ model, callLog }, { messages, tools: [], scope: "PLATFORM" });
 		assert.equal(platform.ok, true, "the platform's turn still runs while the sample is at its ceiling");
