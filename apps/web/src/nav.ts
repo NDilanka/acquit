@@ -81,6 +81,8 @@ export function pageHeading(route: Route, role: Role | null): { eyebrow: string;
       return { eyebrow: "Public", title: "Verifiers" };
     case "print":
       return { eyebrow: "Public", title: "Print verifier" };
+    case "inspect":
+      return { eyebrow: "Public", title: "Try to cheat the checker" };
     case "howWorkIsChecked":
       return { eyebrow: "Public", title: "How work is checked" };
     case "tour":

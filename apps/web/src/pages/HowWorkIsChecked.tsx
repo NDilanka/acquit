@@ -24,7 +24,7 @@ export function HowWorkIsCheckedPage({ session, onSignedIn }: { session: Session
       <p>No physical inspection or money. Print and laser exams are coming.</p>
       <details className="checking-fold" onToggle={event => setPrintOpen(event.currentTarget.open)}><summary>Explore the print checks</summary><div hidden={!printOpen}><PrintDemoPage session={session} onSignedIn={onSignedIn} onAnnounce={announce} embedded /></div></details>
     </section></div>
-    <section className="checking-inspector" aria-label="Inspector preview"><h2>Inspector</h2><p className="muted">A place to inspect check evidence. Coming later; no inspector is connected yet.</p></section>
+    <section className="checking-inspector" aria-labelledby="checking-inspector-title"><h2 id="checking-inspector-title">Inspector</h2><p className="muted">Feed the real laser checker an honest file or a cheat, and watch which rule catches it. The file is checked in your browser; the machine run is simulated.</p><p><Link className="text-button" to="/inspect">Try to cheat the checker</Link></p></section>
     <div className="owner-actions"><Link className={printOpen ? "text-button" : "btn"} to={agent ? `/specialists/exam/${encodeURIComponent(agent.id)}` : "/specialists"}>{agent ? "Back to your agent" : "Plug in a code agent"}</Link></div>
   </article>;
 }

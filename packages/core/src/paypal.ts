@@ -27,7 +27,7 @@ export type FeeQuote = {
 	readonly split: CommercialSplit;
 	readonly model: ProcessorFeeModel;
 	readonly predictedProcessorFee: UsdCents;
-	/** split.fee - predictedProcessorFee. 6000 - 1515 = 4485, so the operator nets 36000. */
+	/** split.fee - predictedProcessorFee. At the wallet fee, 6000 - 1515 = 4485, so the operator nets 36000. The actual net moves with the observed fee. */
 	readonly platformFeeInstruction: UsdCents;
 };
 
