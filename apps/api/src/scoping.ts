@@ -59,39 +59,69 @@ export type ScopeTurnResult = { readonly ok: true; readonly text: string; readon
 	| { readonly ok: false; readonly reason: "PROVIDER_ERROR" | "RATE_LIMITED" | "NO_KEY" | "BUDGET"; readonly detail: string;
 		readonly sessionId?: string | null; readonly factoryCredits?: number | null };
 
+/** The whole scoping turn's wall-clock bound, primary and fallback together. It matches the Ask turn's outer bound, so a
+ * slow primary cannot leave the fallback a second full attempt on top of it. */
+const SCOPE_TURN_DEADLINE_MS = 120_000;
+
 /** One scoping model turn: reserve from the deployment's shared budget, call, record the END. Under fireworks a
  * provider error gets exactly one call on the scoping feature's fallback model, reserved and recorded like any
  * other call; a rate or usage limit is terminal. The other providers make one call, never a second. The draft is
- * a background convenience, so the fallback is the only retry and the budget refuses it when spent. */
+ * a background convenience, so the fallback is the only retry and the budget refuses it when spent. The primary and
+ * the fallback share one deadline (SCOPE_TURN_DEADLINE_MS unless the caller names another): it cancels the request in
+ * flight, and once it has passed, no fallback is reserved or asked. */
 export async function scopeDraftTurn(deps: { readonly model: AskModelPort; readonly callLog: ModelCallLog; readonly jobId: JobId | null;
-		readonly env?: NodeJS.ProcessEnv },
+		readonly env?: NodeJS.ProcessEnv; readonly deadlineMs?: number },
 	prompt: string): Promise<ScopeTurnResult> {
 	const env = deps.env ?? process.env;
 	const provider = modelProvider(env);
 	const models = scopeAttemptModels(provider, env);
 	const at = (): string => new Date().toISOString();
-	// The budget's lock file lives beside the log; make sure the directory is there before the
-	// reservation asks for it.
-	await mkdir(dirname(deps.callLog.path), { recursive: true });
-	const reserve = (model: string) => reserveModelCall(deps.callLog, { at: at(), caller: "scoping", jobId: deps.jobId, provider, model });
-	const record = async (model: string, result: AskModelResult): Promise<void> => {
-		await deps.callLog.append({ at: at(), caller: "scoping", jobId: deps.jobId, provider, model, phase: "END",
-			outcome: result.ok ? "answered" : result.reason, sessionId: result.sessionId ?? null, factoryCredits: result.factoryCredits ?? null,
-			requestId: result.requestId ?? null, usage: result.usage ?? null });
-	};
-	const reserved = await reserve(models.primary);
-	if (!reserved.ok) return { ok: false, reason: "BUDGET", detail: reserved.detail ?? "the deployment's shared model budget is spent for now" };
-	let model = models.primary;
-	let result = await deps.model(prompt, undefined, model);
-	await record(model, result);
-	if (!result.ok && result.reason === "PROVIDER_ERROR" && models.fallback !== null) {
-		model = models.fallback;
-		const retried = await reserve(model);
-		if (!retried.ok) return { ok: false, reason: "BUDGET", detail: retried.detail ?? "the shared model budget refused the fallback draft call" };
-		result = await deps.model(prompt, undefined, model);
+	// One controller for the whole turn: its signal reaches every model call, and the timer aborts it at the deadline.
+	const deadline = new AbortController();
+	const timer = setTimeout(() => { deadline.abort(); }, deps.deadlineMs ?? SCOPE_TURN_DEADLINE_MS);
+	const signal = deadline.signal;
+	// A function, not a property read: TypeScript narrows `signal.aborted` after one check, and the later checks must still read it live.
+	const isExpired = (): boolean => signal.aborted;
+	const expired: ScopeTurnResult = { ok: false, reason: "PROVIDER_ERROR", detail: "the scoping turn ran past its deadline" };
+	const cancelledAttempt: AskModelResult = { ok: false, reason: "PROVIDER_ERROR", detail: "the scoping turn ran past its deadline" };
+	try {
+		// The budget's lock file lives beside the log; make sure the directory is there before the
+		// reservation asks for it.
+		await mkdir(dirname(deps.callLog.path), { recursive: true });
+		const reserve = (model: string) => reserveModelCall(deps.callLog, { at: at(), caller: "scoping", jobId: deps.jobId, provider, model });
+		const record = async (model: string, result: AskModelResult): Promise<void> => {
+			await deps.callLog.append({ at: at(), caller: "scoping", jobId: deps.jobId, provider, model, phase: "END",
+				outcome: result.ok ? "answered" : result.reason, sessionId: result.sessionId ?? null, factoryCredits: result.factoryCredits ?? null,
+				requestId: result.requestId ?? null, usage: result.usage ?? null });
+		};
+		// A turn already past its deadline reserves nothing and runs nothing.
+		if (isExpired()) return expired;
+		const reserved = await reserve(models.primary);
+		if (!reserved.ok) return { ok: false, reason: "BUDGET", detail: reserved.detail ?? "the deployment's shared model budget is spent for now" };
+		// Expired while the reservation was written: the START stands, its END records the cancel, and no model call runs.
+		if (isExpired()) {
+			await record(models.primary, cancelledAttempt);
+			return expired;
+		}
+		let model = models.primary;
+		let result = await deps.model(prompt, signal, model);
 		await record(model, result);
+		// The fallback never starts past the deadline: a retry that starts then spends budget on an answer nobody reads.
+		if (!result.ok && result.reason === "PROVIDER_ERROR" && models.fallback !== null && !isExpired()) {
+			model = models.fallback;
+			const retried = await reserve(model);
+			if (!retried.ok) return { ok: false, reason: "BUDGET", detail: retried.detail ?? "the shared model budget refused the fallback draft call" };
+			if (isExpired()) {
+				await record(model, cancelledAttempt);
+				return expired;
+			}
+			result = await deps.model(prompt, signal, model);
+			await record(model, result);
+		}
+		return result;
+	} finally {
+		clearTimeout(timer);
 	}
-	return result;
 }
 
 export type ScopingKickDeps = {

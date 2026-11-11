@@ -205,6 +205,88 @@ test("the scoping turn reserves from the shared budget before the model, and an 
 	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
 });
 
+/** A scoping model answer for a call that runs until its signal is cancelled. The safety timer keeps a test from hanging
+ * when no signal arrives; the test then fails on its own assertions. */
+const untilCancelled = (signal: AbortSignal | undefined): Promise<AskModelResult> => new Promise(resolve => {
+	const safety = setTimeout(() => { resolve(failed("PROVIDER_ERROR")); }, 2_000);
+	signal?.addEventListener("abort", () => { clearTimeout(safety); resolve(failed("PROVIDER_ERROR")); }, { once: true });
+});
+
+const KIMI = "accounts/fireworks/models/kimi-k3p1-pro";
+const GLM_FALLBACK = "accounts/fireworks/models/glm-5p3";
+
+test("a scoping deadline that expires during the primary cancels it, and no fallback is reserved or asked", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-a1-deadline-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const signals: (AbortSignal | undefined)[] = [];
+		const outcome = await scopeDraftTurn({ model: async (_prompt, signal) => { signals.push(signal); return untilCancelled(signal); },
+			callLog: log, jobId, env: {}, deadlineMs: 250 }, "prompt");
+		assert.equal(outcome.ok, false, "the cancelled primary is a failed draft");
+		assert.equal(signals.length, 1, "the primary was the only call");
+		assert.equal(signals[0]?.aborted, true, "the primary's request was cancelled at the deadline");
+		assert.deepEqual((await log.records()).map(record => [record.phase, record.model]), [["START", KIMI], ["END", KIMI]]);
+	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
+});
+
+test("a scoping deadline that expires during the fallback aborts the fallback's request, and the turn ends there", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-a1-deadline-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		let calls = 0;
+		const signals: (AbortSignal | undefined)[] = [];
+		const outcome = await scopeDraftTurn({ model: async (_prompt, signal) => {
+			calls++;
+			signals.push(signal);
+			return calls === 1 ? failed("PROVIDER_ERROR") : untilCancelled(signal);
+		}, callLog: log, jobId, env: {}, deadlineMs: 400 }, "prompt");
+		assert.equal(outcome.ok, false, "the cancelled fallback is a failed draft");
+		assert.equal(calls, 2, "the primary, then the one fallback, and nothing after it");
+		assert.equal(signals[1]?.aborted, true, "the fallback's request was cancelled at the deadline");
+		assert.deepEqual((await log.records()).map(record => [record.phase, record.model]),
+			[["START", KIMI], ["END", KIMI], ["START", GLM_FALLBACK], ["END", GLM_FALLBACK]]);
+	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
+});
+
+test("a deadline that expires before the fallback is reserved stops the turn: no fallback reservation and no fallback call", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-a1-deadline-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const asked: (string | undefined)[] = [];
+		// The primary ignores its signal and answers after the deadline has passed. The deadline is long enough for the
+		// primary's own reservation to finish first, so the primary is asked and the test is about the fallback alone.
+		const outcome = await scopeDraftTurn({ model: async (_prompt, _signal, model) => {
+			asked.push(model);
+			await new Promise(resolve => { setTimeout(resolve, 500); });
+			return failed("PROVIDER_ERROR");
+		}, callLog: log, jobId, env: {}, deadlineMs: 250 }, "prompt");
+		assert.equal(outcome.ok, false);
+		assert.deepEqual(asked, [KIMI], "the fallback is never asked once the turn has expired");
+		assert.deepEqual((await log.records()).map(record => [record.phase, record.model]), [["START", KIMI], ["END", KIMI]],
+			"no START is written for a fallback that never runs");
+	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
+});
+
+test("a deadline that expires while the fallback reservation is written: its END records the cancel and no fallback call runs", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "acquit-a1-deadline-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		// The fallback's START takes longer than the deadline to write, so the deadline passes inside the reservation.
+		const slow: typeof log = { ...log, append: async record => {
+			if (record.phase === "START" && record.model === GLM_FALLBACK) await new Promise(resolve => { setTimeout(resolve, 500); });
+			return log.append(record);
+		} };
+		const asked: (string | undefined)[] = [];
+		const outcome = await scopeDraftTurn({ model: async (_prompt, _signal, model) => { asked.push(model); return failed("PROVIDER_ERROR"); },
+			callLog: slow, jobId, env: {}, deadlineMs: 250 }, "prompt");
+		assert.equal(outcome.ok, false);
+		assert.deepEqual(asked, [KIMI], "the reserved-but-expired fallback never reaches the model");
+		assert.deepEqual((await log.records()).map(record => [record.phase, record.model, record.outcome ?? null]),
+			[["START", KIMI, null], ["END", KIMI, "PROVIDER_ERROR"], ["START", GLM_FALLBACK, null], ["END", GLM_FALLBACK, "PROVIDER_ERROR"]],
+			"the reservation's END names the cancel, so the log counts every START");
+	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); }
+});
+
 test("the A1 scoping caller runs droid read-only: no --auto, json output, the pinned model, the prompt by file", { timeout: 30_000 }, async () => {
 	const dir = await mkdtemp(join(tmpdir(), "acquit-a1-argv-"));
 	try {
