@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { activityEvents, activityJobHref, activityLanes, activityStateWords, activitySteps, activitySummary, closedMoneyWords, closedReasonWords, MONEY_FLOW_WORDS, releasedWorkHref, runnerAction, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
+import { activityEvents, activityJobHref, activityLanes, activityStateWords, activitySteps, activitySummary, closedMoneyWords, closedReasonWords, MONEY_FLOW_WORDS, paypalCheckWords, releasedWorkHref, runnerAction, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
 import type { ActivityState, OwnerActivity, ReleaseAuthority } from "./types.ts";
 
 const example = JSON.parse(readFileSync(new URL("./__fixtures__/activity.example.json",import.meta.url),"utf8")) as OwnerActivity;
@@ -12,7 +12,7 @@ test("the four-step track uses each stored amount and time without fee arithmeti
   const job = {...released,bid:{...released.bid!,priceCents:4000},moneyHeld:{...released.moneyHeld!,heldCents:4200},
     attempts:[{...released.attempts[0]!,frozen:{passed:48,expected:48},hidden:{passed:8,expected:8}}],
     release:{...released.release!,payoutCents:3638}};
-  const steps = activitySteps(job);
+  const steps = activitySteps(job,example.labels);
   assert.deepEqual(steps.map(step => step.title),["Bid placed $40.00","Money held $42.00","Verified","Released $36.38"]);
   assert.deepEqual(steps.map(step => step.at),[job.bid.placedAt,job.moneyHeld.heldAt,job.attempts[0]!.at,job.release.at]);
   assert.equal(steps[2]!.detail,"48 of 48 visible, 8 of 8 hidden");
@@ -23,16 +23,16 @@ test("the four-step track uses each stored amount and time without fee arithmeti
 });
 
 test("live steps are marked by state, and absent verdicts, tallies and payouts are not invented", () => {
-  const working = activitySteps(held);
+  const working = activitySteps(held,example.labels);
   assert.equal(working.find(step => step.current)?.key,"held");
   assert.equal(working[2]!.at,null);
   assert.equal(working[2]!.detail,null);
   assert.equal(working[3]!.at,null);
-  const checking = activitySteps({...held,state:"VERIFYING",attempts:[{...released.attempts[0]!,result:"REJECTED"}]});
+  const checking = activitySteps({...held,state:"VERIFYING",attempts:[{...released.attempts[0]!,result:"REJECTED"}]},example.labels);
   assert.equal(checking.find(step => step.current)?.title,"Verifying");
   assert.equal(checking[2]!.at,null);
-  assert.equal(activitySteps({...released,release:{...released.release!,payoutCents:null}})[3]!.title,"Released");
-  assert.equal(activitySteps({...held,state:"CLOSED"}).some(step => step.current),false);
+  assert.equal(activitySteps({...released,release:{...released.release!,payoutCents:null}},example.labels)[3]!.title,"Released");
+  assert.equal(activitySteps({...held,state:"CLOSED"},example.labels).some(step => step.current),false);
 });
 
 test("Activity headlines distinguish no run, current work, a paid run and an unknown payout", () => {
@@ -181,4 +181,20 @@ test("reason summaries never expose a hidden test suffix", () => {
   assert.equal(events[2]!.rejected,true);
   assert.ok(events[2]!.details.includes("Some checks did not pass."));
   assert.equal(events[2]!.details.some(detail => detail.includes("TESTS_FAILED:hidden")),false);
+});
+
+test("PayPal's recorded check reads as one plain line, labelled PayPal sandbox, and only when it was recorded", () => {
+  const check = (outcome: "HELD" | "NOT_HELD" | "UNAVAILABLE", heldValue: string | null = "400.00", heldCurrency: string | null = "USD") =>
+    ({ orderId: "8AB12345CD678901E", checkedAt: "2026-11-10T18:02:00.000Z", outcome, heldValue, heldCurrency });
+  assert.equal(paypalCheckWords(check("HELD"),example.labels),"PayPal confirms $400.00 is held · order 8AB… · PayPal sandbox");
+  assert.equal(paypalCheckWords(check("HELD","1000","JPY"),example.labels),"PayPal confirms JPY 1000 is held · order 8AB… · PayPal sandbox");
+  assert.equal(paypalCheckWords(check("NOT_HELD",null,null),example.labels),"PayPal does not confirm this money is held · order 8AB… · PayPal sandbox");
+  assert.equal(paypalCheckWords(check("UNAVAILABLE",null,null),example.labels),"PayPal's check is unavailable · order 8AB… · PayPal sandbox");
+  for (const outcome of ["HELD","NOT_HELD","UNAVAILABLE"] as const)
+    assert.doesNotMatch(paypalCheckWords(check(outcome),example.labels),/COMPLETED|APPROVED|CAPTURE|ORDER_|8AB12345/);
+
+  const withCheck = {...held,paypalCheck:check("HELD")};
+  assert.equal(activitySteps(withCheck,example.labels)[1]!.detail,"PayPal confirms $400.00 is held · order 8AB… · PayPal sandbox");
+  assert.equal(activitySteps(held,example.labels)[1]!.detail,null, "no recorded check adds no line to the job's progress");
+  assert.equal(activitySteps({...held,paypalCheck:null},example.labels)[1]!.detail,null);
 });

@@ -157,6 +157,12 @@ export type ActivityJob = {
   readonly updatedAt: string;
   readonly bid: { readonly id: string; readonly priceCents: number; readonly placedAt: string } | null;
   readonly moneyHeld: { readonly heldCents: number; readonly heldAt: string } | null;
+  /** PayPal's check of the money at work start, as recorded. Null or absent when none was recorded. */
+  readonly paypalCheck?: {
+    readonly orderId: string; readonly checkedAt: string;
+    readonly outcome: "HELD" | "NOT_HELD" | "UNAVAILABLE";
+    readonly heldValue: string | null; readonly heldCurrency: string | null;
+  } | null;
   readonly attempts: readonly {
     readonly ordinal: number; readonly result: string; readonly at: string;
     readonly frozen: ActivityTally | null; readonly hidden: ActivityTally | null; readonly reasons: readonly string[];
