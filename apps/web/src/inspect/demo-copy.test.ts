@@ -16,18 +16,20 @@ test("hidden tests are only ever mentioned as part of paid code jobs", () => {
   for (const s of sentences.filter((s) => /\bhidden tests\b/i.test(s))) assert.match(s, /code jobs/, s);
 });
 
-test("no copy claims a laser check runs on a server or that this is a real job", () => {
-  // Laser jobs are not paid work yet and no server runs the laser checker; only code jobs run checks on the server.
+test("a check runs on a server only in a paid job, and no copy claims this demonstration is a real job", () => {
+  // The demonstration's checks run in the visitor's browser. Paid laser jobs run the laser checker on Acquit's server, and
+  // paid code jobs run hidden tests there. So a sentence that puts a check on a server must name a paid job.
   for (const s of sentences) {
-    assert.doesNotMatch(s, /On a real job|that check runs|this check runs|laser[^.]*server|server[^.]*laser/i, s);
-    if (/\bserver\b/i.test(s)) assert.match(s, /code jobs/, s);
+    assert.doesNotMatch(s, /On a real job|that check runs|this check runs/i, s);
+    if (/\bserver\b/i.test(s)) assert.match(s, /paid (code|laser) jobs/i, s);
+    if (/\blaser\b/i.test(s) && /\bserver\b/i.test(s)) assert.match(s, /paid laser jobs/i, s);
   }
 });
 
-test("the intro says both checks run in the browser and laser jobs are not paid work yet", () => {
+test("the intro says both checks run in the browser and paid laser jobs run the checker on the server", () => {
   assert.match(DEMO_INTRO, /demonstration/);
   assert.match(DEMO_INTRO, /Both checks run in your browser/);
-  assert.match(DEMO_INTRO, /Laser jobs are not paid work on Acquit yet/);
+  assert.match(DEMO_INTRO, /Paid laser jobs run the same laser checker on Acquit's server/);
   assert.match(MOMENT.sub, /^Shown here for the demonstration\./);
 });
 

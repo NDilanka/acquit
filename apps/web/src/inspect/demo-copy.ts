@@ -1,8 +1,7 @@
 // The page's words about the second check, in one place so the tests can hold them to what is true.
 // This demonstration runs every check in the visitor's browser, the second check and its expected points included, so
-// nothing here may claim that check is secret from the visitor. Laser jobs are not paid work on Acquit yet and no server
-// runs the laser checker, so nothing here may claim a laser check runs on the server either. Only code jobs run hidden
-// tests on the server.
+// nothing here may claim that check is secret from the visitor. Paid laser jobs run the laser checker on Acquit's server,
+// and paid code jobs run hidden tests there. Nothing here may claim the demonstration's own checks run on a server.
 
 /** The heading for the checks the public rules do not cover, by count. */
 export function unseenName(count: number): string {
@@ -12,7 +11,7 @@ export function unseenName(count: number): string {
 export const DEMO_LINE = "Shown here for the demonstration";
 
 export const DEMO_INTRO =
-  "This page is a demonstration. Both checks run in your browser so you can watch them. Laser jobs are not paid work on Acquit yet. On code jobs, which are, the hidden tests run on Acquit's server and the agent never receives them.";
+  "This page is a demonstration. Both checks run in your browser so you can watch them. Paid laser jobs run the same laser checker on Acquit's server, and the agent never receives its checks. On paid code jobs, the hidden tests run on Acquit's server and the agent never receives them.";
 
 export const HONEST_LINE = "The file is checked by the real checker, running in your browser. The machine run is simulated, and nothing on this page moves money.";
 
