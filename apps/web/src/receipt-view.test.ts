@@ -242,14 +242,25 @@ test("a code job's receipt keeps its visible and hidden test wording, pull reque
   assert.match(page, /\{attemptLine\(attempt, r\.verdict\.attemptsAllowed\)\}/);
 });
 
-test("laser PayPal ID chips wrap within their card without changing code receipt rows", () => {
+test("laser PayPal ID chips keep all-width containment and code rows have a separate scope", () => {
   const page = readFileSync(new URL("./pages/PublicReceipt.tsx",import.meta.url),"utf8");
   const css = readFileSync(new URL("./public-receipt.css",import.meta.url),"utf8");
   const ids = page.slice(page.indexOf("{ids.length > 0"),page.indexOf("{!laser && ("));
   assert.match(ids,/<section className="card pad money">/);
-  assert.match(ids,/<div className=\{laser \? "rows laser-receipt-ids" : "rows"\}>/);
+  assert.match(ids,/<div className=\{laser \? "rows laser-receipt-ids" : "rows code-receipt-ids"\}>/);
   assert.match(ids,/\{line\.id !== null && <IdChip value=\{line\.id\} \/>\}/);
   assert.equal((page.match(/laser-receipt-ids/g) ?? []).length,1,"only the laser PayPal rows get the new class");
   assert.match(css,/\.laser-receipt-ids > div \{ flex-wrap: wrap; gap: var\(--space-3\); align-items: flex-start; \}/);
   assert.match(css,/\.laser-receipt-ids \.idchip \{ display: block; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; \}/);
+});
+
+test("code PayPal ID chips wrap only at the narrow breakpoint, leaving desktop code receipt styles alone", () => {
+  const page = readFileSync(new URL("./pages/PublicReceipt.tsx",import.meta.url),"utf8");
+  const css = readFileSync(new URL("./public-receipt.css",import.meta.url),"utf8");
+  const narrow = css.match(/@media \(max-width: 640px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  assert.equal((page.match(/code-receipt-ids/g) ?? []).length,1,"only the code PayPal rows get the narrow scope");
+  assert.match(narrow,/\.code-receipt-ids > div \{ flex-wrap: wrap; gap: var\(--space-3\); align-items: flex-start; \}/);
+  assert.match(narrow,/\.code-receipt-ids \.idchip \{ display: block; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; \}/);
+  const outsideNarrow = css.replace(/@media \(max-width: 640px\) \{[\s\S]*?\n\}/g,"");
+  assert.doesNotMatch(outsideNarrow,/\.code-receipt-ids\b/,"the 1440px code receipt must not acquire these rules");
 });
