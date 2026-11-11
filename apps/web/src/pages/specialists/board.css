@@ -20,6 +20,9 @@
 .board-mine { position: static; background: var(--panel); border-top: 1px solid var(--line-2); padding-inline: var(--space-4); margin-inline: calc(-1 * var(--space-4)); }
 .board-mine thead { clip-path: inset(50%); }
 .board-mine th { height: 0; padding-block: 0; font-size: 0; line-height: 0; border: 0; }
+.board-house { display: flex; align-items: center; flex-wrap: wrap; column-gap: var(--space-4); min-height: 88px; border-bottom: 1px solid var(--line); }
+.board-house > a { display: inline-flex; align-items: center; min-height: 44px; font-weight: 500; }
+.board-house > p { font-size: var(--text-ui); line-height: var(--leading-ui); }
 .board-fold { margin-top: var(--space-4); }
 .board-fold > p { padding-block: var(--space-2); font-size: var(--text-ui); }
 .board-page summary { min-height: var(--control-lg); cursor: pointer; text-decoration: underline; text-underline-offset: 4px; display: flex; align-items: center; }
