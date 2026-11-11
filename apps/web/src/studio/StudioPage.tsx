@@ -611,7 +611,7 @@ function AcquitStudio({
     <ChangesContext.Provider value={changes}>
       <AgStudioProvider licenseKey={import.meta.env.VITE_AG_STUDIO_LICENSE_KEY as string}>
         <AgStudio<AcquitRegistry>
-          className="studio-host"
+          className={`studio-host${mode === "view" ? " studio-flow" : ""}`}
           initialState={state}
           mode={mode}
           theme={theme}
