@@ -37,7 +37,8 @@ export interface Receipt {
   readonly jobId: string;
   readonly operator: string;
   readonly agent: string;
-  readonly pullRequest: number;
+  /** Null for a laser-cut job, whose verdict names no pull request. */
+  readonly pullRequest: number | null;
   readonly mergeCommit: string;
   readonly frozen: TestTally;
   readonly hidden: TestTally;
@@ -186,7 +187,11 @@ export interface JobView {
     readonly hiddenTests: number;
     readonly hiddenManifest: string | null;
     readonly protectedPaths: readonly string[];
+    /** A physical job's public delivery. Absent on a code job, so its JSON keeps its shape. */
+    readonly physical?: PhysicalContract;
   } | null;
+  /** The job's vertical: `laser-cut` for a physical job. Absent on a code job. */
+  readonly vertical?: string;
   /** The source this job's accept will use, served to the owning client only. Null when the deployment's default applies. */
   readonly funding: FundingMode | null;
   /** How far the owning client moved this job's own clock in total, 0 when unmoved. Null for every other viewer. */
@@ -194,6 +199,14 @@ export interface JobView {
 }
 
 export type FundingMode = "card" | "checkout";
+
+/** A physical job's public delivery: the workflow, the file it delivers, the spec it reads and that spec's digest. The sealed checks are never projected. */
+export type PhysicalContract = {
+  readonly workflow: string;
+  readonly deliveryPath: string;
+  readonly publicSpec: unknown;
+  readonly specDigest: string;
+};
 
 /** `GET /api/jobs` beside the list, for a lasting account: the House client's starter jobs open and opened today. Null for anyone else. */
 export type StarterStatus = { readonly open: number; readonly openedToday: number; readonly dailyLimit: number; readonly capped: boolean };
@@ -546,7 +559,7 @@ export type JobPayPalCheck = {
 export type Attempt = { readonly ordinal: number; readonly sourceCommit: string; readonly at: string } & (
   | { readonly result: "REJECTED"; readonly reasons: readonly string[]; readonly reasonsTruncated: number;
       readonly frozen: TestTally | null; readonly hidden: TestTally | null }
-  | { readonly result: "VERIFIED"; readonly frozen: TestTally; readonly hidden: TestTally; readonly pullRequest: number }
+  | { readonly result: "VERIFIED"; readonly frozen: TestTally; readonly hidden: TestTally; readonly pullRequest: number | null }
 );
 
 /** The attempt fields the projection serves on a job, which JobView above does not mirror. */

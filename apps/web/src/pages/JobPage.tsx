@@ -17,12 +17,14 @@ import { PAYMENT_BOUND, PaymentChoice, paymentAcceptLabel, paymentChoiceFailure,
 import "../payment-choice.css";
 import { approvalStep, approvalWindow, countsLine, failedDraftCopy, leaveOut, readPanel, shortDigest, suiteLine, type ScopingPanel, type Settled } from "../scoping-review";
 import { Link, useRouter } from "../router";
+import { isLaserJob } from "../laser-job";
 import { receiptPageHref } from "../receipt-view";
 import { useSession } from "../session";
 import { ConfirmDialog, HouseBadge, IdChip, Modal, NotFound, StatusPill } from "../ui";
 import { BidForm } from "./BidForm";
 import { BidConfirmation } from "./operator/BidConfirmation";
 import { DeliverPanel } from "./job/DeliverPanel";
+import { LaserJob } from "./job/LaserJob";
 import { MoneyCard } from "./job/MoneyCard";
 import { Timeline } from "./job/Timeline";
 
@@ -103,7 +105,8 @@ export function JobPage({ id }: { id: string }) {
     );
   }
   if (!job) return <p className="muted">Loading job…</p>;
-  // Only the code vertical has a page here. The API names the vertical; a row stored before it reads as code.
+  // A laser-cut job has its own read-only page. The API names the vertical; a row stored before it reads as code.
+  if (isLaserJob(job)) return <LaserJob job={job} />;
   const vertical = (job as JobView & { readonly vertical?: string }).vertical ?? "code";
   if (vertical !== "code") {
     return (
