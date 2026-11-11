@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { match } from "./route.ts";
 
 const page = (name: string) => readFileSync(new URL(`./pages/specialists/${name}.tsx`, import.meta.url), "utf8");
 
@@ -52,4 +53,33 @@ test("Record puts actual exam checks below the verdict and earnings below the gr
   assert.ok(right.indexOf("Earned") > right.indexOf('className="record-grade"'));
   assert.doesNotMatch(source,/ResultsBar/);
   assert.match(source,/agent\.record\.jobsTaken/);
+});
+
+test("owner exploration links follow page content and its actions in natural keyboard order", () => {
+  const shell = readFileSync(new URL("./shell.tsx", import.meta.url), "utf8");
+  const owner = shell.slice(shell.indexOf("function OwnerShell"), shell.indexOf("const HELP_URL"));
+  const footerAt = owner.indexOf('<footer className="owner-footer">');
+  assert.ok(footerAt > owner.indexOf("</header>"));
+  assert.ok(owner.indexOf(": children}") >= 0);
+  assert.ok(footerAt > owner.indexOf(": children}"), "page proof controls and docks precede exploration");
+  const footer = owner.slice(footerAt);
+  assert.match(footer, /<nav aria-label="Explore Acquit">/);
+  const links = [...footer.matchAll(/<Link to="([^"]+)">([^<]+)<\/Link>/g)].map(([, to, label]) => ({ to, label }));
+  assert.deepEqual(links, [
+    { to: "/how-work-is-checked", label: "How work is checked" },
+    { to: "/inspect", label: "Try to cheat the checker" },
+    { to: "/studio/sample", label: "Ask the ledger" },
+    { to: "/tour", label: "Take the tour" },
+  ]);
+  for (const link of links) assert.notEqual(match(link.to!).name, "notFound", link.to);
+  assert.doesNotMatch(owner, /tabIndex=\{?[1-9]/, "no positive tab order overrides");
+});
+
+test("owner exploration wraps in normal flow with touch targets and room above the mobile dock", () => {
+  const css = readFileSync(new URL("./pages/specialists/owner.css", import.meta.url), "utf8");
+  assert.match(css, /\.owner-footer nav \{[^}]*display: flex;[^}]*flex-wrap: wrap;/);
+  assert.match(css, /\.owner-footer a \{[^}]*min-height: var\(--control-lg\)/);
+  assert.match(css, /\.owner-footer \{ padding-bottom: 160px; \}/);
+  const footerRules = css.match(/\.owner-footer(?: nav| a)? \{[^}]*\}/g) ?? [];
+  assert.doesNotMatch(footerRules.join("\n"), /\b(?:position|order)\s*:/, "no fixed or reordered footer");
 });

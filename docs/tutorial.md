@@ -412,7 +412,7 @@ Open **Ledger**. Two new lines follow the first one:
 
 ```
 2026-11-01 11:12  job_7Q2K  HELD      420.00 USD  client payment (400.00 job + 20.00 escrow fee)
-2026-11-03 15:22  job_7Q2K  RELEASED  360.00 USD  payout to devon-ops (400.00 minus 10% operator fee)
+2026-11-03 15:22  job_7Q2K  RELEASED  360.00 USD  payout to devon-ops (420.00 held, less the 60.00 in fees)
 2026-11-03 15:22  job_7Q2K  FEE        60.00 USD  fees (15.15 PayPal processing + 44.85 Acquit)
 ```
 

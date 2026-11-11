@@ -1,5 +1,5 @@
 import { PageTitle } from "../page-title";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ColDef, GetRowIdFunc } from "ag-grid-community";
 import type { BidView, CheckoutPhase, FundingMode, JobDiff, JobView, ScopingCase, UserCommand } from "../api-types";
 import { api, ApiError } from "../api";
@@ -12,11 +12,13 @@ import { bidStatusWord, operatorJobCrumb, payoutHeldBy, runFailureWord } from ".
 import { canDeliver, nextStep, timelineEvents, verifierLine, type TimelineJob, type Viewer } from "../job-timeline";
 import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
+import { PAYMENT_BOUND, PaymentChoice, paymentAcceptLabel, paymentChoiceFailure, paymentChoiceState } from "../payment-choice";
+import "../payment-choice.css";
 import { approvalStep, approvalWindow, countsLine, failedDraftCopy, leaveOut, readPanel, shortDigest, suiteLine, type ScopingPanel, type Settled } from "../scoping-review";
 import { Link, useRouter } from "../router";
 import { receiptPageHref } from "../receipt-view";
 import { useSession } from "../session";
-import { ConfirmDialog, HouseBadge, IdChip, NotFound, StatusPill } from "../ui";
+import { ConfirmDialog, HouseBadge, IdChip, Modal, NotFound, StatusPill } from "../ui";
 import { BidForm } from "./BidForm";
 import { BidConfirmation } from "./operator/BidConfirmation";
 import { DeliverPanel } from "./job/DeliverPanel";
@@ -24,7 +26,7 @@ import { MoneyCard } from "./job/MoneyCard";
 import { Timeline } from "./job/Timeline";
 
 export function JobPage({ id }: { id: string }) {
-  const { user, fundingMode } = useSession();
+  const { user, account, fundingMode } = useSession();
   const { location } = useRouter();
   const [job, setJob] = useState<JobView | null>(null);
   const [diff, setDiff] = useState<JobDiff | null>(null);
@@ -37,6 +39,11 @@ export function JobPage({ id }: { id: string }) {
   const [disputing, setDisputing] = useState(false);
   const [disputeReason, setDisputeReason] = useState("");
   const [placed, setPlaced] = useState<PlacedBid | null>(null);
+  const [paymentBusy, setPaymentBusy] = useState(false);
+  const [paymentError, setPaymentError] = useState<ReturnType<typeof paymentChoiceFailure> | null>(null);
+  const paymentPending = useRef(false);
+  const paymentRevision = useRef(0);
+  const requestedPayment = useRef<FundingMode | null>(null);
   const accept = useIntent();
   const cancel = useIntent();
   const approve = useIntent();
@@ -48,14 +55,17 @@ export function JobPage({ id }: { id: string }) {
   const fundingRetry = location.search.get("funding") === "retry";
 
   const load = useCallback(async () => {
+    const revision = paymentRevision.current;
     try {
       const r = await api.job(id);
+      if (revision !== paymentRevision.current) return null;
       setJob(r.job);
       setDiff(r.diff ?? null);
       setError(null);
       setMissing(false);
       return r.job;
     } catch (e) {
+      if (revision !== paymentRevision.current) return null;
       setDiff(null);
       setMissing(e instanceof ApiError && e.status === 404);
       setError(errorText(e));
@@ -114,8 +124,38 @@ export function JobPage({ id }: { id: string }) {
   const held = job.ledger.find((line) => line.kind === "HELD") ?? null;
   // A job's own choice wins; before accept, a job nobody chose for funds with the deployment's default.
   const source: FundingMode = job.funding ?? fundingMode;
+  const paymentBound = job.status !== "OPEN" || job.phase !== "BIDDING";
+  const paymentDisabled = paymentBusy || accept.busy || paymentBound || paymentError !== null;
+
+  const choosePayment = async (mode: FundingMode) => {
+    if (paymentPending.current || accept.busy || paymentError?.locked) return;
+    if (paymentChoiceState(job, { user, account }) !== "ready") return;
+    paymentPending.current = true;
+    paymentRevision.current++;
+    requestedPayment.current = mode;
+    setPaymentBusy(true);
+    setPaymentError(null);
+    try {
+      const saved = await api.chooseJobFunding(job.id, mode);
+      paymentRevision.current++;
+      // Only an acknowledged choice changes the label or the source used by checkout.
+      setJob(current => current?.id === job.id ? { ...current, funding: saved.mode } : current);
+    } catch (error) {
+      paymentRevision.current++;
+      const failure = paymentChoiceFailure(error);
+      setPaymentError(failure);
+      if (failure.locked) await load();
+    } finally {
+      paymentPending.current = false;
+      setPaymentBusy(false);
+    }
+  };
+  const closeAccept = () => {
+    if (!paymentPending.current && !accept.busy) setConfirm(null);
+  };
 
   const doAccept = async (bid: BidView) => {
+    if (paymentPending.current || paymentDisabled || !isClient || !bidding) return;
     const outcome = await accept.send(`accept:${bid.id}`, (): UserCommand => ({
       type: "AcceptBid",
       jobId: job.id,
@@ -124,7 +164,7 @@ export function JobPage({ id }: { id: string }) {
     setConfirm(null);
     if (outcome) {
       setCheckout(bid);
-      if (outcome.result.kind === "JOB") setJob(outcome.result.job);
+      if (outcome.result.kind === "JOB") setJob({ ...outcome.result.job, funding: source });
     }
   };
 
@@ -242,7 +282,7 @@ export function JobPage({ id }: { id: string }) {
       <div className="grid">
         <div>
           {isClient && <ScopingReview job={job} />}
-          {bidding && <Bids job={job} isClient={isClient} busy={accept.busy} onAccept={setConfirm} />}
+          {bidding && <Bids job={job} isClient={isClient} busy={accept.busy} onAccept={bid => { setPaymentError(null); accept.setError(null); setConfirm(bid); }} />}
           {accept.error && <div className="alert">{accept.error}</div>}
 
           {job.status === "OPEN" && (checkout || (funding && isClient)) && (
@@ -352,24 +392,32 @@ export function JobPage({ id }: { id: string }) {
       </div>
 
       {confirm && (
-        <div className="scrim" onClick={() => setConfirm(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Accept {confirm.label === "HOUSE" ? `House: ${houseName(confirm.handle)}` : confirm.handle}?</h3>
-            <p>
+        <Modal
+          title={`Accept ${confirm.label === "HOUSE" ? `House: ${houseName(confirm.handle)}` : confirm.handle}?`}
+          onClose={closeAccept}
+          actions={<>
+            <button type="button" className="btn ghost" disabled={paymentBusy || accept.busy} onClick={closeAccept}>Back</button>
+            <button type="button" className="btn green payment-accept" disabled={paymentDisabled} onClick={() => void doAccept(confirm)}>
+              {paymentBusy ? "Saving payment choice…" : accept.busy ? "Creating order…" : paymentAcceptLabel(source)}
+            </button>
+          </>}
+        >
+            <PaymentChoice job={job} viewer={{ user, account }} value={source} busy={paymentBusy || accept.busy}
+              locked={paymentError?.locked ?? false} onChange={mode => void choosePayment(mode)} />
+            {paymentBusy && <p role="status">Saving payment choice…</p>}
+            {paymentBound && !paymentError && <p role="status">{PAYMENT_BOUND}</p>}
+            {paymentError && <div className="alert" role="alert"><p>{paymentError.message}</p>
+              {!paymentError.locked && <button type="button" className="btn secondary sm" disabled={paymentBusy}
+                onClick={() => { if (requestedPayment.current) void choosePayment(requestedPayment.current); }}>Retry payment choice</button>}
+            </div>}
+            <p className="dialog-text">
               {source === "card"
                 ? "Acquit charges the sandbox test card now, for a payment that can pay only this operator. Money is released on verified proof."
                 : "Acquit creates a PayPal order that can pay only this operator. You pay now; money is released on verified proof."}
             </p>
             <Breakdown price={confirm.price} payee={confirm.handle} />
             {accept.error && <div className="alert">{accept.error}</div>}
-            <div className="act">
-              <button className="btn ghost" onClick={() => setConfirm(null)}>Back</button>
-              <button className="btn green" disabled={accept.busy} onClick={() => void doAccept(confirm)}>
-                {accept.busy ? "Creating order…" : source === "card" ? "Accept and pay with the test card" : "Accept and pay with PayPal"}
-              </button>
-            </div>
-          </div>
-        </div>
+        </Modal>
       )}
 
       {confirmApprove && mergeCommit && (

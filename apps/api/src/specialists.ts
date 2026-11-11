@@ -8,7 +8,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { CODE_VERTICAL } from "../../../packages/core/src/code-manifest.ts";
 import type { Vertical } from "../../../packages/core/src/code-manifest.ts";
 import { bidGate, captureAt, countedAttempts, examRefusal, GRADE_PER_REJECTED, GRADE_PER_VERIFIED, gradeOf, heldPayee, LASER_VERTICAL, PRINT_VERTICAL, recordOf, sampleOf, SAMPLES, settledSimulated, simulatedAcquittal, startedRun } from "../../../packages/core/src/exam.ts";
-import type { ExamCount, ExamRefusal, ExamRun, ExamStart, ExamStatus, LaserExam, StandingOrders } from "../../../packages/core/src/exam.ts";
+import type { AgentRecord, ExamCount, ExamRefusal, ExamRun, ExamStart, ExamStatus, LaserExam, StandingOrders } from "../../../packages/core/src/exam.ts";
 import { independentChecksOf, LASER_PUBLIC_RULES, sealedChecksIn } from "../../../packages/core/src/physical.ts";
 import { captureOf, payeeMerchantOf } from "../../../packages/core/src/job.ts";
 import type { JobRow } from "../../../packages/core/src/job.ts";
@@ -82,8 +82,26 @@ export function jobRowsOf(db: DatabaseSync, nowMs: number = Date.now()): readonl
 	return rows;
 }
 
-function gradeAndRecord(db: DatabaseSync, agent: Agent) {
-	const record = recordOf(agent.id, jobRowsOf(db));
+/**
+ * Every agent's record from one pass over the rows: each row goes into the bucket of its escrow payee, and recordOf
+ * runs once per bucket, so each row is read once however many agents there are. The per-agent scan this replaces
+ * read every row once for each agent. An agent with no bucket has no rows, and its record is recordOf(id, []).
+ */
+export function recordsByAgent(rows: readonly JobRow[]): ReadonlyMap<string, AgentRecord> {
+	const buckets = new Map<string, JobRow[]>();
+	for (const row of rows) {
+		const payee = heldPayee(row.state);
+		if (payee === null) continue;
+		const bucket = buckets.get(payee.agent);
+		if (bucket === undefined) buckets.set(payee.agent, [row]); else bucket.push(row);
+	}
+	const records = new Map<string, AgentRecord>();
+	for (const [agentId, bucket] of buckets) records.set(agentId, recordOf(agentId, bucket));
+	return records;
+}
+
+function gradeAndRecord(db: DatabaseSync, agent: Agent, nowMs: number = Date.now()) {
+	const record = recordOf(agent.id, jobRowsOf(db, nowMs));
 	return { grade: gradeOf(record, agent.acquittal), record };
 }
 
@@ -124,25 +142,85 @@ export function agentListJson(db: DatabaseSync, agent: Agent) {
 		acquittal: acquittalJson(agent.acquittal), gate: gateReport(agent), grade, standingOrders: standingOrdersOf(db, agent.id) };
 }
 
-/** Row 7's view: any signed-in principal reads it, so the prompt digest is never selected here. */
-export function agentViewJson(db: DatabaseSync, agent: Agent) {
-	const { grade, record } = gradeAndRecord(db, agent);
+/** Public Record allowlist. Only the already-displayed handle identifies the owner; never raw agent/operator rows. */
+export function agentViewJson(db: DatabaseSync, agent: Agent, nowMs: number = Date.now()) {
+	const { grade, record } = gradeAndRecord(db, agent, nowMs);
 	return { id: agent.id, name: agent.name, task: agent.task, runner: agent.runner,
 		owner: { handle: agent.owner }, acquittal: acquittalJson(agent.acquittal), acquittedAt: agent.acquittal?.at ?? null,
 		gate: gateReport(agent), grade, record };
 }
 
-/** Row 8: the acquitted agents of every owner, best grade first. Seeded acquittals are labelled, not hidden. */
-export function floorJson(db: DatabaseSync) {
+/** Row 8: the acquitted agents of every owner, best grade first. Seeded acquittals are labelled, not hidden. One pass over the rows covers every agent. */
+export function floorJson(db: DatabaseSync, nowMs: number = Date.now()) {
+	const records = recordsByAgent(jobRowsOf(db, nowMs));
 	const specialists = listAgentRows(db, null)
 		.filter(agent => agent.acquittal !== null)
 		.map(agent => {
-			const { grade, record } = gradeAndRecord(db, agent);
+			const record = records.get(agent.id) ?? recordOf(agent.id, []);
+			const grade = gradeOf(record, agent.acquittal);
 			return { agentId: agent.id, name: agent.name, task: agent.task, grade, record, earnedCents: record.earnedCents,
 				seeded: agent.acquittal?.examId === "seed", simulated: agent.acquittal?.simulated === true, gate: gateReport(agent) };
 		})
 		.sort((a, b) => (b.grade ?? 0) - (a.grade ?? 0));
 	return { specialists };
+}
+
+/**
+ * The public read cache. The signed-out floor and agent view each scan the whole book, and anyone can request them
+ * without a session. Each body is kept for PUBLIC_READ_TTL_MS per database, then recomputed. The cache is keyed by route
+ * and id, holds at most PUBLIC_READ_MAX_KEYS entries per database (the oldest entry is dropped first), and is cleared by
+ * every acquittal write on this connection, so an owner's new pass shows at once. A body is also dropped when another
+ * connection commits to the database (SQLite's data_version moves), so a write made outside this process is not hidden
+ * for the TTL. The public routes never read the session, so one body serves every caller and a cached body is safe to
+ * return to any of them.
+ */
+export const PUBLIC_READ_TTL_MS = 15_000;
+export const PUBLIC_READ_MAX_KEYS = 200;
+type PublicRead = { readonly at: number; readonly version: number; readonly body: unknown };
+let publicReads = new WeakMap<DatabaseSync, Map<string, PublicRead>>();
+let publicComputeCount = 0;
+
+/** SQLite's data_version. It moves when another connection commits, and not for commits made on this connection. */
+function dataVersionOf(db: DatabaseSync): number {
+	return Number((db.prepare("PRAGMA data_version").get() as { data_version: number }).data_version);
+}
+
+function publicRead<T>(db: DatabaseSync, key: string, nowMs: number, compute: () => T): T {
+	let entries = publicReads.get(db);
+	if (entries === undefined) { entries = new Map(); publicReads.set(db, entries); }
+	// Read the version before computing: a commit that lands during the computation leaves the entry stale, so the next read recomputes.
+	const version = dataVersionOf(db);
+	const hit = entries.get(key);
+	if (hit !== undefined && hit.version === version && nowMs - hit.at < PUBLIC_READ_TTL_MS) return hit.body as T;
+	publicComputeCount += 1;
+	const body = compute();
+	if (!entries.has(key) && entries.size >= PUBLIC_READ_MAX_KEYS) {
+		const oldest = entries.keys().next();
+		if (!oldest.done) entries.delete(oldest.value);
+	}
+	entries.set(key, { at: nowMs, version, body });
+	return body;
+}
+
+/** The signed-out floor: floorJson, served from the public read cache. */
+export function publicFloorJson(db: DatabaseSync, nowMs: number = Date.now()) {
+	return publicRead(db, "floor", nowMs, () => floorJson(db, nowMs));
+}
+
+/** The signed-out agent view: agentViewJson, served from the public read cache under the agent's id. */
+export function publicAgentViewJson(db: DatabaseSync, agent: Agent, nowMs: number = Date.now()) {
+	return publicRead(db, `agent:${agent.id}`, nowMs, () => agentViewJson(db, agent, nowMs));
+}
+
+/** Test seam: forgets every cached public read and resets the compute count. */
+export function resetPublicReadCache(): void {
+	publicReads = new WeakMap();
+	publicComputeCount = 0;
+}
+
+/** Public reads that ran their computation since the last reset. A burst of cache hits leaves it unchanged. */
+export function publicReadComputeCount(): number {
+	return publicComputeCount;
 }
 
 /** Row 1: the catalog, with the viewer's own plugged agent named on the sample it came from. */
@@ -221,6 +299,8 @@ function settleExamRun(db: DatabaseSync, run: ExamRun): void {
 /** Stores the acquittal on the agent row. The caller holds the transaction that makes it part of the exam's write. */
 function writeAcquittal(db: DatabaseSync, agent: Agent, acquittal: Acquittal): void {
 	db.prepare("UPDATE agents SET json = ? WHERE id = ?").run(JSON.stringify({ ...agent, acquittal }), agent.id);
+	// The floor and the agent view both change with an acquittal. Drop this database's public reads now, not at the TTL.
+	publicReads.delete(db);
 }
 
 /**

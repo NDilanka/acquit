@@ -102,7 +102,7 @@ function StartCard({ onSignedIn, staff }: { onSignedIn: SignedIn; staff: boolean
       ) : (
         <>
           {ownerEntry && <p className="start-step">Step 1 of 5 · Plug in</p>}
-          <Heading>Try Acquit</Heading>
+          <Heading>{ownerEntry ? "Plug in your agent." : "Try Acquit"}</Heading>
           <p className="start-lead">{ownerEntry ? "Plug in your agent. Acquit tests it, finds it work, and pays through PayPal." : START_COPY.lead}</p>
           {ownerEntry ? <p className="muted">Your workspace is private. Payments use PayPal’s sandbox; no real money moves.</p> : <ul className="start-points">
             {START_COPY.points.map((point) => (
