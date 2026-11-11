@@ -1037,6 +1037,11 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 	}
 	// A legacy body names the code vertical, never an implicit physical workflow.
 	if (parsed.vertical === undefined && jobVertical !== CODE_VERTICAL) return Response.json({ ok: true, applied: false });
+	// The stored job decides the verdict's shape: a physical verdict publishes no pull request, and a code verdict names one.
+	const verified = parsed.report.kind === "VERDICT" && parsed.report.verdict.result === "VERIFIED" ? parsed.report.verdict : null;
+	if (verified !== null && (verified.pullRequest === null) !== (physicalWorkflowOf(jobVertical) !== null)) {
+		return Response.json({ error: "VERDICT_MISMATCH" }, { status: 409 });
+	}
 	const judge = verifiersOf(ports)[jobVertical];
 	// The stored job chooses its judge. A different, independently keyed judge cannot finish it.
 	const judgedBy = judge !== undefined &&

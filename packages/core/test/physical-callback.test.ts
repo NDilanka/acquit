@@ -57,9 +57,11 @@ function verifyingRow(vertical: Vertical = laserVertical): JobRow {
 }
 
 function reportFor(row: JobRow): VerifierReport {
+	// A physical verdict publishes nothing: no pull request, and its merge commit is the submitted commit.
+	const physical = storedVertical(row) === laserVertical;
 	return { kind: "VERDICT", verdict: { result: "VERIFIED", runId: verifierRunId(row.id, 1), sourceCommit: submittedCommit,
-		mergeCommit: judgedCommit, pullRequest: 13, frozen: { expected: 0, passed: 0 }, hidden: { expected: 0, passed: 0 },
-		reportDigest: "1".repeat(64) as Digest, at: now } };
+		mergeCommit: physical ? submittedCommit : judgedCommit, pullRequest: physical ? null : 13,
+		frozen: { expected: 0, passed: 0 }, hidden: { expected: 0, passed: 0 }, reportDigest: "1".repeat(64) as Digest, at: now } };
 }
 
 function signed(value: unknown): Request {
@@ -153,6 +155,30 @@ test("a laser-cut-labelled callback cannot finish a code job", async t => {
 	const response = await ingestVerifierCallback(ports, signed({ ...body, vertical: "laser-cut" }));
 	assert.equal(response.status, 409);
 	assert.deepEqual(await response.json(), { error: "VERTICAL_MISMATCH" });
+	assert.deepEqual(await store.readJob(row.id), before);
+});
+
+test("a laser-cut verdict that names a pull request is refused without changing its run", async t => {
+	const { store, ports, row } = await fixture(t);
+	const before = await store.readJob(row.id);
+	const verdict = { result: "VERIFIED", runId: verifierRunId(row.id, 1), sourceCommit: submittedCommit, mergeCommit: submittedCommit,
+		pullRequest: 13, frozen: { expected: 0, passed: 0 }, hidden: { expected: 0, passed: 0 }, reportDigest: "1".repeat(64), at: now };
+	const response = await ingestVerifierCallback(ports, signed({ jobId: row.id, ordinal: 1, vertical: "laser-cut",
+		report: { kind: "VERDICT", verdict } }));
+	assert.equal(response.status, 409);
+	assert.deepEqual(await response.json(), { error: "VERDICT_MISMATCH" });
+	assert.deepEqual(await store.readJob(row.id), before);
+});
+
+test("a code verdict that names no pull request is refused without changing its run", async t => {
+	const { store, ports, row } = await fixture(t, "code" as Vertical);
+	const before = await store.readJob(row.id);
+	const verdict = { result: "VERIFIED", runId: verifierRunId(row.id, 1), sourceCommit: submittedCommit, mergeCommit: judgedCommit,
+		pullRequest: null, frozen: { expected: 0, passed: 0 }, hidden: { expected: 0, passed: 0 }, reportDigest: "1".repeat(64), at: now };
+	const response = await ingestVerifierCallback(ports, signed({ jobId: row.id, ordinal: 1, vertical: "code",
+		report: { kind: "VERDICT", verdict } }));
+	assert.equal(response.status, 409);
+	assert.deepEqual(await response.json(), { error: "VERDICT_MISMATCH" });
 	assert.deepEqual(await store.readJob(row.id), before);
 });
 

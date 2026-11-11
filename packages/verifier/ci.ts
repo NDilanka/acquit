@@ -5,7 +5,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
-import { physicalWorkflowOf } from "../core/src/physical.ts";
 import { boundedDetail, isRunFailureName, unconfiguredVerifier } from "../core/src/verifier.ts";
 import type { RejectReason, RunFailure, TestTally, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest, VerifierPort } from "../core/src/verifier.ts";
 import { randomBytes } from "node:crypto";
@@ -107,18 +106,16 @@ export function parseCallbackBody(value: unknown): { readonly jobId: JobId; read
 	const ordinal = body.ordinal === 1 || body.ordinal === 2 || body.ordinal === 3 ? body.ordinal : null;
 	const vertical = body.vertical === undefined ? undefined : nonEmptyString(body.vertical);
 	if (vertical === null) return null;
-	// Only a physical vertical's verdict may carry no pull request. The server still checks this vertical against the job.
-	const physical = vertical !== undefined && physicalWorkflowOf(vertical) !== null;
-	const report = parseReport(body.report, physical);
+	const report = parseReport(body.report);
 	return jobId && ordinal && report ? { jobId, ordinal, report, ...(vertical === undefined ? {} : { vertical }) } : null;
 }
 
 /** A report is a verdict or a named failure. Anything else is refused rather than guessed at. */
-export function parseReport(value: unknown, physical = false): VerifierReport | null {
+export function parseReport(value: unknown): VerifierReport | null {
 	if (!value || typeof value !== "object") return null;
 	const raw = value as Record<string, unknown>;
 	if (raw.kind === "VERDICT") {
-		const verdict = parseVerdict(raw.verdict, physical);
+		const verdict = parseVerdict(raw.verdict);
 		return verdict === null ? null : { kind: "VERDICT", verdict };
 	}
 	if (raw.kind === "RUN_FAILED") {
@@ -141,8 +138,8 @@ export function parseRunFailure(value: unknown): RunFailure | null {
 	return { runId: runId as VerifierRunId, sourceCommit: sourceCommit as CommitSha, name, detail, at };
 }
 
-/** A physical verdict publishes nothing, so its pullRequest is null. Any other verdict must name a positive pull request. */
-export function parseVerdict(value: unknown, physical = false): Verdict | null {
+/** A verified verdict names a positive pull request or names none. The stored job decides which one it must be, never the body. */
+export function parseVerdict(value: unknown): Verdict | null {
 	if (!value || typeof value !== "object") return null;
 	const raw = value as Record<string, unknown>;
 	const runId = nonEmptyString(raw.runId);
@@ -162,17 +159,13 @@ export function parseVerdict(value: unknown, physical = false): Verdict | null {
 	}
 	if (raw.result !== "VERIFIED") return null;
 	const mergeCommit = nonEmptyString(raw.mergeCommit);
-	const pullRequest = typeof raw.pullRequest === "number" && Number.isSafeInteger(raw.pullRequest) && raw.pullRequest > 0 ? raw.pullRequest : null;
+	const named = typeof raw.pullRequest === "number" && Number.isSafeInteger(raw.pullRequest) && raw.pullRequest > 0;
+	if (!named && raw.pullRequest !== null) return null;
+	const pullRequest = named ? raw.pullRequest as number : null;
 	const frozen = parseTally(raw.frozen);
 	const hidden = parseTally(raw.hidden);
 	const reportDigest = typeof raw.reportDigest === "string" && /^[0-9a-f]{64}$/.test(raw.reportDigest) ? raw.reportDigest as Digest : null;
 	if (!mergeCommit || !frozen || !hidden || !reportDigest) return null;
-	if (physical) {
-		if (raw.pullRequest !== null) return null;
-		return { result: "VERIFIED", runId: runId as VerifierRunId, sourceCommit: sourceCommit as CommitSha,
-			mergeCommit: mergeCommit as CommitSha, pullRequest: null, frozen, hidden, reportDigest, at };
-	}
-	if (!pullRequest) return null;
 	return { result: "VERIFIED", runId: runId as VerifierRunId, sourceCommit: sourceCommit as CommitSha,
 		mergeCommit: mergeCommit as CommitSha, pullRequest, frozen, hidden, reportDigest, at };
 }
