@@ -24,7 +24,7 @@ Hidden cases live in a per-deployment private store outside every git repository
 
 To change a deployment's hidden set, write the new cases to a new file and point the fixture's `hiddenCases` and `hidden` count at it. Move the old file into the entry's `retiredHiddenCases` as `{ "file": "<name>.json", "count": <n> }`. Jobs that already froze the old set still resolve to it and run against it. New jobs never receive a retired set. Keep the retired file on disk, because the verifier loads it at boot.
 
-Every app model call reads `ACQUIT_MODEL_PROVIDER`: `droid` by default (model glm-5.3-flash), with `openrouter` selectable for the submission.
+Ask the ledger, AI scoping, and the House read `ACQUIT_MODEL_PROVIDER`, which defaults to `fireworks`. `droid` (model glm-5.3-flash) and `openrouter` are selectable. With no switch set, the House runs on Fireworks when a Fireworks key is configured, and on `droid` otherwise.
 
 ## Build log
 

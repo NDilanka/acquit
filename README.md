@@ -26,7 +26,7 @@ The demo runs at https://80-225-220-230.sslip.io. It is public: the basic-auth g
 - **The House.** The platform's own operator delivers with a real model inside the runner sandbox, through the same Submit edge any operator uses, and every delivery writes a receipt row (`packages/house/`, `packages/runner/`).
 - **An MCP server for operators' agents.** A stdio server over the operator token with `list_jobs`, `get_job`, `place_bid`, `submit_attempt`, `get_receipt`, and `get_payout_status`; payout status is read through `@paypal/agent-toolkit`. The operator confirms each submit in the CLI or the web app, never through a model-set flag (`packages/mcp/`).
 - **The web app.** Sign-up and sign-in, job pages with the checkout breakdown, payee, and ledger, AG Grid tables for bids, the ledger, and receipts, AG Studio dashboards for operator earnings and platform escrow, and the "Ask the ledger" agent with read-only Acquit and PayPal tools (`apps/web/`).
-- **Model provider.** Every app model call (the House, scoping, and Ask the ledger) reads `ACQUIT_MODEL_PROVIDER`. The default is `droid`, which runs Factory's `droid exec -m glm-5.3-flash` with `FACTORY_API_KEY`; `openrouter` is the selectable alternative (`packages/core/src/model.ts`).
+- **Model provider.** Ask the ledger and AI scoping read `ACQUIT_MODEL_PROVIDER`, which defaults to `fireworks`. `droid` (Factory's `droid exec -m glm-5.3-flash`, with `FACTORY_API_KEY`) and `openrouter` are the selectable alternatives (`packages/core/src/model.ts`). The House coding agent reads `ACQUIT_HOUSE_PROVIDER` first, then `ACQUIT_MODEL_PROVIDER` when that is set. With neither set, it runs on Fireworks when `FIREWORKS_API_KEY` is set and on `droid` otherwise (`packages/house/src/runner.ts`).
 - **Deployment.** The hosted VM's Caddy, systemd, and firewall configuration is tracked as templates, with no secret in the tree. See [deploy/README.md](deploy/README.md).
 
 ## What proves each judging criterion
@@ -57,7 +57,7 @@ Two gitignored directories carry the build's process, and a fresh clone does not
 - Node.js 24 or newer
 - Docker, running (the verifier judges in a Docker subject; the House and `acquit run` use the runner image, built with `docker build -t acquit/runner-node20 packages/runner`)
 - A PayPal sandbox Platform app, a sandbox operator merchant onboarded through Partner Referrals, a sandbox merchant for the House, and a sandbox Personal buyer
-- For model runs: a Factory API key for the default `droid` provider
+- For model runs: a Fireworks API key for the default provider, or a Factory API key for `droid`
 
 ## Configure
 
@@ -73,7 +73,7 @@ Create `.env` in the repo root (it is gitignored). The API, the control CLI, and
 | `ACQUIT_FIXTURES` | The fixture registry the API and the verifier boot with. With `ACQUIT_DEV=1`, they fall back to `packages/verifier/fixtures/fixtures.example.json`. |
 | `ACQUIT_CLIENT_REPOSITORY` | The client repository a demo visitor's fork is made from (default `maya-client/invoice-app`). |
 | `ACQUIT_GITHUB_APP_ID`, `ACQUIT_GITHUB_APP_ORG`, `ACQUIT_GITHUB_APP_PRIVATE_KEY` | The GitHub App that creates visitor forks and per-job work repos. Blank them for a lane that must not touch GitHub. |
-| `ACQUIT_MODEL_PROVIDER`, `FACTORY_API_KEY` | The model provider switch (`droid` by default). The droid provider reads `FACTORY_API_KEY`, then `~/.config/acquit/factory-api-key`. |
+| `ACQUIT_MODEL_PROVIDER`, `ACQUIT_HOUSE_PROVIDER`, `FIREWORKS_API_KEY`, `FACTORY_API_KEY` | The model provider switch (`fireworks` by default) and an optional switch for the House alone. The fireworks provider reads `FIREWORKS_API_KEY`. The droid provider reads `FACTORY_API_KEY`, then `~/.config/acquit/factory-api-key`. |
 | `ACQUIT_PLATFORM_KEY` | Mints the platform session behind the platform ledger route and dashboards. |
 | `VITE_AG_STUDIO_LICENSE_KEY` | The AG Studio license for the dashboards. |
 | `ACQUIT_DEV` | `1` turns on the seeded sign-in, the dev-only routes, the dev clock, and the funding-mode switch. Leave it unset for a public deployment. |
