@@ -241,6 +241,23 @@ test("a rate limit and an out-of-budget turn fail the turn with their own codes 
   }
 });
 
+test("a budget refusal names the limit that ran out when the API says which, and keeps the shared copy when it does not", async () => {
+  for (const [detail, wording] of [
+    ["per-minute", /too many questions in a minute/],
+    ["per-day", /today's question limit/],
+    ["busy", /busy with other questions/],
+  ] as const) {
+    const fetch = fakeFetch(429, { error: "MODEL_BUDGET", detail });
+    const response = await askLedgerAdapter({ fetch, newId: () => "t6", now: () => 1 }).executeTurn(request(conversation)).complete;
+    assert.equal(response.error?.code, "MODEL_BUDGET");
+    assert.match(response.error?.message ?? "", wording, `the ${detail} refusal names its limit`);
+    assert.doesNotMatch(response.error?.message ?? "", /out of model budget/);
+  }
+  const shared = fakeFetch(429, { error: "MODEL_BUDGET", detail: "the shared model budget is spent" });
+  const sharedResponse = await askLedgerAdapter({ fetch: shared, newId: () => "t7", now: () => 1 }).executeTurn(request(conversation)).complete;
+  assert.match(sharedResponse.error?.message ?? "", /out of model budget/, "a shared budget refusal carries no token, so it keeps the generic copy");
+});
+
 test("a cancelled turn resolves as cancelled rather than rejecting", async () => {
   const controller = new AbortController();
   const fetch = (async (_url: string, init: RequestInit) => {

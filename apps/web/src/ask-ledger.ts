@@ -244,8 +244,12 @@ export function askErrorText(error: ApiError): string {
       return "Ask the ledger has no model key on the server, so it cannot answer yet.";
     case "MODEL_RATE_LIMITED":
       return `The model is rate limited right now. Try again in a minute.${detail}`;
-    // A 429 for MODEL_BUDGET is either the shared budget or an operator's own turn limit, so the copy names neither.
+    // A 429 for MODEL_BUDGET carries the limit that ran out when the API can say which one (a turn limit, or the busy
+    // sample book). A shared model budget refusal carries no token, so it keeps the generic copy, which names no limit.
     case "MODEL_BUDGET":
+      if (error.detail === "per-minute") return "You have asked too many questions in a minute. Try again in a minute.";
+      if (error.detail === "per-day") return "You have reached today's question limit. Try again in 24 hours.";
+      if (error.detail === "busy") return "Sample Ask is busy with other questions. Try again in a moment.";
       return "Ask the ledger is out of model budget for now. Try again later.";
     case "MODEL_PROVIDER_ERROR":
       return `The model provider failed to answer.${detail}`;
