@@ -40,7 +40,7 @@ function isTransientPassError(error: unknown): boolean {
 
 /** How many starter jobs an account's workspace opens with. */
 export const STARTER_OPENING_COUNT = 2;
-/** The starter budget: 400.00 USD, so the operator is paid 360.00 USD after the platform's 10 percent. */
+/** The starter budget: 400.00 USD. The client pays 420.00 and the operator receives 360.00 after Acquit's fixed fee. PayPal's processing fee comes out of the held money. */
 export const STARTER_BUDGET = 40_000 as UsdCents;
 /** The starter's delivery window. */
 export const STARTER_DELIVERY_HOURS = 5 * 24;

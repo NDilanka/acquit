@@ -24,7 +24,7 @@ function rejectedView(): JobProjection {
 	return {
 		id: "job_7Q2K" as JobId, title: "Totals round wrong for 3-decimal currencies", status: "IN_PROGRESS", phase: "READY",
 		budget: 40000, deliveryEndsAt: "2026-11-08T10:00:00.000Z", contract: { repository: "maya-client/invoice-app",
-			frozenAt, frozenTests: 48, hiddenTests: 6, protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] },
+			frozenAt, frozenTests: 48, hiddenTests: 8, protectedPaths: ["tests/**", ".github/**", "package.json", "package-lock.json", ".gitattributes", "**/.gitattributes"] },
 		bids: { operators: [], house: null }, lockedTo: "devon-ops" as OperatorId, escrow: "HELD",
 		approveUrl: null, ledger: [], attempts: { used: 1, left: 2, last: "REJECTED", reasons: ["PR modifies frozen test file tests/totals.test.ts"],
 			history: [{ ordinal: 1, result: "REJECTED", reasons: ["PR modifies frozen test file tests/totals.test.ts"], sourceCommit: submitted,
@@ -41,7 +41,7 @@ function verifiedView(): JobProjection {
 			history: [
 				{ ...view.attempts.history[0], sourceCommit: "a3b6ead29f4e367d1871e753b516cc9e832871e4" as CommitSha },
 				{ ordinal: 2, result: "VERIFIED", reasons: [], sourceCommit: submitted, at: "2026-11-08T09:20:00.000Z",
-					frozen: { expected: 48, passed: 48 }, hidden: { expected: 6, passed: 6 }, pullRequest: 13 },
+					frozen: { expected: 48, passed: 48 }, hidden: { expected: 8, passed: 8 }, pullRequest: 13 },
 			], pending: null },
 		reviewEndsAt: "2026-11-11T09:20:00.000Z", pullRequest: 13 } as unknown as JobProjection;
 }
@@ -65,8 +65,8 @@ test("the VERIFIED block matches docs/tutorial.md character for character", () =
 		"Submitted job_7Q2K (attempt 2 of 3)",
 		"Verifier result: VERIFIED",
 		"\tFrozen tests: 48 passed (suite frozen at a41c9e2)",
-		"\tHidden tests: 6 passed",
-		"\tRequired tests: 54 completed, 0 skipped or missing",
+		"\tHidden tests: 8 passed",
+		"\tRequired tests: 56 completed, 0 skipped or missing",
 		"\tProtected paths: none touched",
 		"Pull request opened: maya-client/invoice-app#13",
 		"Job status: VERIFIED",
