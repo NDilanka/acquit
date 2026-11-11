@@ -5,6 +5,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
+import { physicalWorkflowOf } from "../core/src/physical.ts";
 import { boundedDetail, isRunFailureName, unconfiguredVerifier } from "../core/src/verifier.ts";
 import type { RejectReason, RunFailure, TestTally, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest, VerifierPort } from "../core/src/verifier.ts";
 import { randomBytes } from "node:crypto";
@@ -108,16 +109,16 @@ export function parseCallbackBody(value: unknown): { readonly jobId: JobId; read
 	const jobId = typeof body.jobId === "string" && /^job_[A-Za-z0-9_-]{4,80}$/.test(body.jobId) ? body.jobId as JobId : null;
 	const ordinal = body.ordinal === 1 || body.ordinal === 2 || body.ordinal === 3 ? body.ordinal : null;
 	const vertical = nonEmptyString(body.vertical) ?? undefined;
-	const report = parseReport(body.report);
+	const report = parseReport(body.report, vertical !== undefined && physicalWorkflowOf(vertical) !== null);
 	return jobId && ordinal && report ? { jobId, ordinal, report, ...(vertical === undefined ? {} : { vertical }) } : null;
 }
 
 /** A report is a verdict or a named failure. Anything else is refused rather than guessed at. */
-export function parseReport(value: unknown): VerifierReport | null {
+export function parseReport(value: unknown, physical = false): VerifierReport | null {
 	if (!value || typeof value !== "object") return null;
 	const raw = value as Record<string, unknown>;
 	if (raw.kind === "VERDICT") {
-		const verdict = parseVerdict(raw.verdict);
+		const verdict = parseVerdict(raw.verdict, physical);
 		return verdict === null ? null : { kind: "VERDICT", verdict };
 	}
 	if (raw.kind === "RUN_FAILED") {
@@ -141,7 +142,7 @@ export function parseRunFailure(value: unknown): RunFailure | null {
 }
 
 /** A verified verdict names a positive pull request or names none. The stored job decides which one it must be, never the body. */
-export function parseVerdict(value: unknown): Verdict | null {
+export function parseVerdict(value: unknown, physical = false): Verdict | null {
 	if (!value || typeof value !== "object") return null;
 	const raw = value as Record<string, unknown>;
 	const runId = nonEmptyString(raw.runId);
@@ -150,7 +151,7 @@ export function parseVerdict(value: unknown): Verdict | null {
 	if (!runId || !sourceCommit || !at) return null;
 	if (raw.result === "REJECTED") {
 		if (!Array.isArray(raw.reasons) || raw.reasons.length === 0) return null;
-		const reasons = raw.reasons.map(parseRejectReason);
+		const reasons = raw.reasons.map(reason => parseRejectReason(reason, physical));
 		if (reasons.some(reason => reason === null)) return null;
 		// The count is part of the contract: a rejection that does not say how much it dropped is not readable.
 		const reasonsTruncated = typeof raw.reasonsTruncated === "number" && Number.isSafeInteger(raw.reasonsTruncated) && raw.reasonsTruncated >= 0
@@ -191,9 +192,13 @@ function parseTallies(value: unknown): { readonly frozen: TestTally; readonly hi
 	return frozen && hidden ? { frozen, hidden } : null;
 }
 
-function parseRejectReason(value: unknown): RejectReason | null {
+/** Reasons only a physical job's judge can name. A code verdict that names one is not a verdict this build can read. */
+const PHYSICAL_ONLY_REASONS: ReadonlySet<unknown> = new Set(["DELIVERY_MISSING", "SPEC_RULES_FAILED", "CHECK_FAILED", "SEALED_CHECKS_FAILED"]);
+
+function parseRejectReason(value: unknown, physical: boolean): RejectReason | null {
 	if (!value || typeof value !== "object") return null;
 	const reason = value as Record<string, unknown>;
+	if (PHYSICAL_ONLY_REASONS.has(reason.kind) && !physical) return null;
 	const ids = (input: unknown): readonly TestId[] | null => Array.isArray(input) && input.every(id => typeof id === "string") ? input as unknown as readonly TestId[] : null;
 	switch (reason.kind) {
 		case "PROTECTED_PATH_MODIFIED": case "DELIVERY_MISSING":

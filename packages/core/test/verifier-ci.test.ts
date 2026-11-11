@@ -88,6 +88,18 @@ test("the callback boundary carries a run's named failure, bounded, or nothing",
 	assert.equal(parsed?.report.kind === "RUN_FAILED" ? parsed.report.failure.detail.length : 0, 300);
 });
 
+test("a physical-only reason is named only by a physical job's verdict, and a code verdict that names one is refused at parse", () => {
+	const physicalOnly = [{ kind: "DELIVERY_MISSING", path: "delivery/part.svg" }, { kind: "SPEC_RULES_FAILED", rules: ["parse"] },
+		{ kind: "CHECK_FAILED", detail: "CHECKER_CRASHED" }, { kind: "SEALED_CHECKS_FAILED", failed: 1 }];
+	for (const reason of physicalOnly) {
+		const verdict = { result: "REJECTED", runId: "run_ci_physical", sourceCommit: FROZEN_COMMIT, at: "2026-10-06T12:00:00Z", reasonsTruncated: 0, reasons: [reason] };
+		const report = { kind: "VERDICT", verdict };
+		assert.equal(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, report }), null, `${reason.kind} with no vertical`);
+		assert.equal(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, vertical: "code", report }), null, `${reason.kind} on a code callback`);
+		assert.equal(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, vertical: "laser-cut", report })?.ordinal, 1, `${reason.kind} on a laser callback`);
+	}
+});
+
 test("parseVerdict refuses a verdict it cannot fully justify and keeps a rejection's named reason", () => {
 	const rejected = { result: "REJECTED", runId: "run_ci_2", sourceCommit: FROZEN_COMMIT, at: "2026-10-06T12:00:00Z", reasonsTruncated: 0,
 		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }, { kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1"] }] };
