@@ -286,3 +286,15 @@ test("a physical delivery that is a regular file is judged through the git sourc
 	});
 	assert.equal(verdict.result, "VERIFIED");
 });
+
+test("a code read of a symlink returns the link's target text, as git shows it, and only a physical read refuses it", () => {
+	const delivery = deliveryRepository(repo => {
+		const target = gitIn(repo, ["hash-object", "-w", "--stdin"], "tests/real.test.ts");
+		gitIn(repo, ["update-index", "--add", "--cacheinfo", `120000,${target},tests/link.test.ts`]);
+	});
+	try {
+		const source = gitSource(delivery.repo);
+		assert.equal(source.readFile(delivery.head, "tests/link.test.ts"), "tests/real.test.ts");
+		assert.throws(() => source.readFile(delivery.head, "tests/link.test.ts", "regular"), /is not a regular file/);
+	} finally { delivery.remove(); }
+});

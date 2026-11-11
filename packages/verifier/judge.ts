@@ -22,7 +22,8 @@ import type { SubjectLauncher, SubjectRun } from "./subject.ts";
 /** Read-only access to the two commits a run compares: the frozen tree and the submitted one. */
 export interface JudgeSource {
 	diff(frozenAt: CommitSha, sourceCommit: CommitSha): DiffSummary;
-	readFile(commit: CommitSha, path: string): string;
+	/** A physical delivery is read as "regular": a link or a submodule is refused by name. A code job's file is read as git shows it. */
+	readFile(commit: CommitSha, path: string, entry?: "regular"): string;
 	/**
 	 * Extracts a commit into a fresh tree, opened to the subject's uid. A tree that holds a link is
 	 * returned un-opened, with the first link named, so the judge refuses the run before anything
@@ -61,12 +62,14 @@ export function gitSource(repoDir: string): JudgeSource {
 				return patch.split("\n").filter(line => line.startsWith("+") && !line.startsWith("+++")).map(line => line.slice(1)).join("\n");
 			}
 		},
-		readFile(commit, path) {
-			// The tree entry decides before anything is read. A link's target text or a submodule's commit is never the file's bytes,
-			// so only a regular file is read. Every other entry, and a missing one, is refused by name.
-			const entry = (run(["ls-tree", "-z", commit, "--", path], "utf8") as string).split("\0")
-				.find(line => line.slice(line.indexOf("\t") + 1) === path);
-			if (entry === undefined || !REGULAR_FILE_MODES.has(entry.split(" ")[0])) throw new Error(`${path} is not a regular file at ${commit}`);
+		readFile(commit, path, kind) {
+			// A physical delivery reads only a regular file. The tree entry decides before anything is read: a link's target text or
+			// a submodule's commit is never the file's bytes. Every other entry, and a missing one, is refused by name.
+			if (kind === "regular") {
+				const entry = (run(["ls-tree", "-z", commit, "--", path], "utf8") as string).split("\0")
+					.find(line => line.slice(line.indexOf("\t") + 1) === path);
+				if (entry === undefined || !REGULAR_FILE_MODES.has(entry.split(" ")[0])) throw new Error(`${path} is not a regular file at ${commit}`);
+			}
 			return run(["show", `${commit}:${path}`], "utf8") as string;
 		},
 		materialize(commit) {
@@ -292,7 +295,7 @@ async function runPhysicalJudge(request: VerifierRunRequest, deps: JudgeDeps, ph
 		verdict: decidePhysicalVerdict(request, [reason], NO_FINDINGS, clock.now()), subject: null, timings: timingsOf(started, {}) });
 	let artefact: string;
 	try {
-		artefact = deps.source.readFile(request.sourceCommit, physical.deliveryPath);
+		artefact = deps.source.readFile(request.sourceCommit, physical.deliveryPath, "regular");
 	} catch {
 		return screened({ kind: "DELIVERY_MISSING", path: physical.deliveryPath });
 	}
