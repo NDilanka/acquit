@@ -172,7 +172,7 @@ test("a PayPal read that throws leaves the House's delivery exactly as it is wit
 	const without = await houseTick(jobId);
 	let reads = 0;
 	const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), now: () => "2026-11-10T21:00:00.000Z", log: () => {},
-		read: async () => { reads++; throw new Error("FAKE-PUSH-TOKEN-FOR-TEST refused"); } });
+		read: async () => { reads++; throw new Error("FAKE-PUSH-TOKEN-FOR-TEST refused"); }, backoffMs: [] });
 	const withCheck = await houseTick(jobId, check);
 	await settle();
 	assert.equal(reads, 1, "the check starts with the delivery");
@@ -186,7 +186,7 @@ test("a PayPal read that never settles does not hold the House's delivery, and t
 	const jobId = "job_house_check_hangs";
 	const without = await houseTick(jobId);
 	const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), now: () => "2026-11-10T21:00:00.000Z", log: () => {},
-		timeoutMs: 1_000, read: () => new Promise(() => {}) });
+		timeoutMs: 1_000, backoffMs: [], read: () => new Promise(() => {}) });
 	const withCheck = await houseTick(jobId, check);
 	assert.deepEqual(withCheck.commands, without.commands);
 	assert.equal(withCheck.state, without.state);
@@ -211,7 +211,7 @@ test("two scans start the House's check once: one read for the job", async () =>
 		writeStateFile(stateDir, jobId, { calls: 1, submittedCommit: "a".repeat(40), submitAttempts: 0, prepareFailures: 0 });
 		let reads = 0;
 		const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), now: () => "2026-11-10T21:00:00.000Z", log: () => {},
-			read: async () => { reads++; throw new Error("READ-FAILED-FOR-TEST"); } });
+			read: async () => { reads++; throw new Error("READ-FAILED-FOR-TEST"); }, backoffMs: [] });
 		const { house, commands } = houseWithCheck(stateDir, jobId, check);
 		await house.kick();
 		await house.kick();

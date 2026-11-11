@@ -17,6 +17,7 @@ import { answerOf, createPayPalCheck, paypalOrderRead, type OrderRead } from "..
 const merchant = "DEVON-MERCHANT" as MerchantId;
 const instantNow = "2026-11-10T21:00:00.000Z";
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 const completed = (orderId = "ORDER1") => ({
 	id: orderId, status: "COMPLETED",
@@ -92,7 +93,7 @@ test("start returns at once, and nothing is recorded until the read settles", as
 
 test("a read that outlasts the timeout records the check as unavailable", async () => {
 	const read: OrderRead = () => new Promise(() => {});
-	const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), read, now: () => instantNow, timeoutMs: 20, log: () => {} });
+	const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), read, now: () => instantNow, timeoutMs: 20, backoffMs: [], log: () => {} });
 	check.start(jobRow("job_a"));
 	await new Promise(resolve => setTimeout(resolve, 80));
 	const record = check.recordsOf(["job_a"]).get("job_a");
@@ -104,7 +105,7 @@ test("a read that outlasts the timeout records the check as unavailable", async 
 test("a failed read records its reason without the error's text", async () => {
 	const lines: string[] = [];
 	const read: OrderRead = async () => { throw new Error("FAKE-PUSH-TOKEN-FOR-TEST was refused"); };
-	const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), read, now: () => instantNow, log: line => lines.push(line) });
+	const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), read, now: () => instantNow, backoffMs: [], log: line => lines.push(line) });
 	check.start(jobRow("job_a"));
 	await settle();
 	const record = check.recordsOf(["job_a"]).get("job_a");
@@ -120,6 +121,52 @@ test("a PayPal HTTP refusal records its status", async () => {
 	check.start(jobRow("job_a"));
 	await settle();
 	assert.equal(check.recordsOf(["job_a"]).get("job_a")?.reason, "PAYPAL_HTTP_404");
+});
+
+test("a read that times out is retried in the same run, and the retry's answer is recorded", async () => {
+	let reads = 0;
+	const read: OrderRead = () => { reads++; return reads === 1 ? new Promise(() => {}) : Promise.resolve(completed()); };
+	const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), read, now: () => instantNow, timeoutMs: 20, backoffMs: [5], log: () => {} });
+	check.start(jobRow("job_a"));
+	assert.equal(check.recordsOf(["job_a"]).size, 0, "nothing is recorded while the run is still retrying");
+	await pause(80);
+	assert.equal(reads, 2);
+	assert.equal(check.recordsOf(["job_a"]).get("job_a")?.outcome, "HELD");
+	assert.equal(check.recordsOf(["job_a"]).get("job_a")?.reason, null);
+});
+
+test("three timeouts record UNAVAILABLE with TIMEOUT after exactly three reads, and a later start reads nothing", async () => {
+	let reads = 0;
+	const read: OrderRead = () => { reads++; return new Promise(() => {}); };
+	const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), read, now: () => instantNow, timeoutMs: 20, backoffMs: [5, 5], log: () => {} });
+	check.start(jobRow("job_a"));
+	await pause(400);
+	const record = check.recordsOf(["job_a"]).get("job_a");
+	assert.equal(reads, 3, "one read and two retries, and no more");
+	assert.equal(record?.outcome, "UNAVAILABLE");
+	assert.equal(record?.reason, "TIMEOUT");
+	check.start(jobRow("job_a"));
+	await settle();
+	assert.equal(reads, 3, "the claim stands: a later start reads nothing");
+});
+
+test("PayPal's 5xx and 429 are read again, and any other PayPal refusal is recorded at once", async () => {
+	for (const status of [503, 429]) {
+		let reads = 0;
+		const read: OrderRead = async () => { reads++; if (reads === 1) throw new PayPalHttpError(status, "/v2/checkout/orders/ORDER1"); return completed(); };
+		const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), read, now: () => instantNow, backoffMs: [1], log: () => {} });
+		check.start(jobRow("job_a"));
+		await pause(30);
+		assert.equal(reads, 2, `PayPal's ${status} is read again`);
+		assert.equal(check.recordsOf(["job_a"]).get("job_a")?.outcome, "HELD");
+	}
+	let refused = 0;
+	const forbidden: OrderRead = async () => { refused++; throw new PayPalHttpError(403, "/v2/checkout/orders/ORDER1"); };
+	const check = createPayPalCheck({ db: new DatabaseSync(":memory:"), read: forbidden, now: () => instantNow, backoffMs: [1, 1], log: () => {} });
+	check.start(jobRow("job_a"));
+	await pause(30);
+	assert.equal(refused, 1, "a 403 is not read again");
+	assert.equal(check.recordsOf(["job_a"]).get("job_a")?.reason, "PAYPAL_HTTP_403");
 });
 
 test("a job is checked once: no second read while one runs, and none after a record", async () => {
@@ -160,6 +207,41 @@ test("a malformed job row never throws into the run", () => {
 	assert.match(lines.join("\n"), /PayPal check did not start/);
 });
 
+test("a restart during a retry's wait is recorded as interrupted, and its order is never read again", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-paypal-check-"));
+	const path = join(dir, "acquit.db");
+	let second: DatabaseSync | null = null;
+	try {
+		// The first process's read times out and waits out its backoff. It dies in that wait, so no answer is written.
+		let firstReads = 0;
+		const first = new DatabaseSync(path);
+		const gone = createPayPalCheck({ db: first, read: () => { firstReads++; return new Promise(() => {}); }, now: () => instantNow,
+			timeoutMs: 20, backoffMs: [300], log: () => {} });
+		gone.start(jobRow("job_a"));
+		await pause(50);
+		first.close();
+		assert.equal(firstReads, 1);
+
+		// The restarted process finds the claim with no answer, and the retry of the push starts no read.
+		second = new DatabaseSync(path);
+		let secondReads = 0;
+		const restarted = createPayPalCheck({ db: second, read: async () => { secondReads++; return completed(); }, now: () => instantNow,
+			log: () => {} });
+		const cut = restarted.recordsOf(["job_a"]).get("job_a");
+		assert.equal(cut?.outcome, "UNAVAILABLE");
+		assert.equal(cut?.reason, "INTERRUPTED");
+		restarted.start(jobRow("job_a"));
+		await settle();
+		assert.equal(secondReads, 0, "a restart never reads the order a second time");
+		assert.equal(restarted.recordsOf(["job_a"]).get("job_a")?.reason, "INTERRUPTED");
+		// Let the cut-off process's remaining wait and read run out against its closed handle before the directory goes.
+		await pause(400);
+	} finally {
+		second?.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("a claim cut off by a restart is recorded as unavailable, and its order is never read again", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "acquit-paypal-check-"));
 	const path = join(dir, "acquit.db");
@@ -169,7 +251,7 @@ test("a claim cut off by a restart is recorded as unavailable, and its order is 
 		let firstReads = 0;
 		const first = new DatabaseSync(path);
 		const gone = createPayPalCheck({ db: first, read: () => { firstReads++; return new Promise(() => {}); }, now: () => instantNow,
-			timeoutMs: 20, log: () => {} });
+			timeoutMs: 20, backoffMs: [], log: () => {} });
 		gone.start(jobRow("job_a"));
 		first.close();
 		await new Promise(resolve => setTimeout(resolve, 40));
