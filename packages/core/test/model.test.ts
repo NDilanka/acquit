@@ -119,6 +119,27 @@ test("the shared budget refuses the 20th call in a rolling minute and the 1000th
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("a key's calls in a day stop at the group's per-key ceiling, another key still runs, and a call outside the group is not counted", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-key-"));
+	try {
+		const log = modelCallLog(join(dir, "model-calls.jsonl"));
+		const group = { name: "sample", callers: ["sample-ask"], perMinute: 13, perDay: 200, perKeyDay: 40 };
+		const base = Date.parse("2026-10-12T00:00:00Z");
+		const call = (offsetMs: number, keys: readonly string[], caller = "sample-ask") => ({ at: new Date(base + offsetMs).toISOString(),
+			caller, jobId: null, provider: "droid", model: "glm-5.3-flash", keys });
+		// Forty calls half an hour apart, written straight to the log: the minute and the group's shared day are never what is full.
+		for (let index = 0; index < 40; index += 1) {
+			await log.append({ ...call(index * 1_800_000, ["account:a", "ip:x"]), phase: "START" });
+		}
+		assert.deepEqual(await reserveModelCall(log, call(40 * 1_800_000, ["account:a", "ip:x"]), group),
+			{ ok: false, reason: "BUDGET", detail: "per-key-day" }, "the forty-first call of one key in a day is refused by that key's day");
+		assert.deepEqual(await reserveModelCall(log, call(40 * 1_800_000, ["account:b", "ip:y"]), group), { ok: true },
+			"another key in the same group still runs");
+		assert.deepEqual(await reserveModelCall(log, call(40 * 1_800_000, ["account:a", "ip:x"], "ask-ledger"), group), { ok: true },
+			"a call from outside the group is not counted against the group's keys");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("two concurrent reservations cannot both pass the cap", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "acquit-budget-race-"));
 	try {

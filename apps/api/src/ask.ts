@@ -75,6 +75,8 @@ export type AskTurnDeps = {
 	readonly caller?: string;
 	/** A caller group's own ceiling inside the shared budget. Its calls, retries included, count against it. */
 	readonly allowance?: ModelCallAllowance;
+	/** The visitor keys (digests) the turn's calls count under, for the allowance's per-key ceiling. Every attempt carries them. */
+	readonly keys?: readonly string[];
 };
 
 /** The instruction every turn runs under, whatever the agent's own definition adds: one JSON
@@ -207,7 +209,7 @@ export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly message
 	};
 	// A turn already cancelled (its request ended, or its deadline passed) reserves nothing and runs nothing.
 	if (isCancelled()) return cancelled;
-	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model: models.primary }, deps.allowance);
+	const reserved = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model: models.primary, keys: deps.keys }, deps.allowance);
 	if (!reserved.ok) return { ok: false, reason: "MODEL_BUDGET", detail: reserved.detail ?? "the deployment's shared model budget is spent for now" };
 	// Cancelled while the reservation was being written: the START stands, its END records the cancel, and no model call runs.
 	if (isCancelled()) {
@@ -221,7 +223,7 @@ export async function askLedgerTurn(deps: AskTurnDeps, input: { readonly message
 	// the request ended, spends budget on an answer nobody reads.
 	if (!result.ok && result.reason === "PROVIDER_ERROR" && !isCancelled()) {
 		model = models.fallback;
-		const retried = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model }, deps.allowance);
+		const retried = await reserveModelCall(deps.callLog, { at: stamp(), caller, jobId: null, provider, model, keys: deps.keys }, deps.allowance);
 		if (!retried.ok) return { ok: false, reason: "MODEL_BUDGET", detail: retried.detail ?? "the shared model budget refused the one retry" };
 		if (isCancelled()) {
 			await recordEnd({ ok: false, reason: "PROVIDER_ERROR", detail: "cancelled" }, model);

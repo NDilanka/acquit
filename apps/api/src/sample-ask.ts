@@ -27,11 +27,19 @@ export const SAMPLE_TURNS_PER_MINUTE = 18;
 export const SAMPLE_TURNS_PER_DAY = 360;
 
 /**
+ * The model calls one visitor (an account or an address) may make to the sample book in a rolling day, retries included.
+ * Each model turn of a question is one call, so this is a few questions a day, and it stops one visitor from taking the
+ * shared sample pool below.
+ */
+export const SAMPLE_MODEL_CALLS_PER_KEY_DAY = 40;
+
+/**
  * The sample book's ceiling inside the shared model budget. Every sample call, retries included, counts here, so the sample
  * as a whole never takes more than 18 a minute or 200 a day, and the platform's and the operators' calls keep the rest. The
  * minute is sized to the per-key minute, so one visitor's three questions in a minute are not cut short by the shared sample.
  */
-export const SAMPLE_ALLOWANCE: ModelCallAllowance = { name: "sample", callers: [SAMPLE_CALLER], perMinute: SAMPLE_TURNS_PER_MINUTE, perDay: 200 };
+export const SAMPLE_ALLOWANCE: ModelCallAllowance = { name: "sample", callers: [SAMPLE_CALLER], perMinute: SAMPLE_TURNS_PER_MINUTE, perDay: 200,
+	perKeyDay: SAMPLE_MODEL_CALLS_PER_KEY_DAY };
 
 /** A sample turn's model call, its one retry included, is held to this long; at the deadline the call is cancelled and the route answers without it. */
 export const SAMPLE_TURN_DEADLINE_MS = 120_000;

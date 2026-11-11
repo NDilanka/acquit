@@ -11,6 +11,7 @@ import type { FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { boundedDetail } from "./verifier.ts";
+import { PER_KEY_DAY_DETAIL } from "./turn-limit.ts";
 
 /** The providers the switch can name. `fireworks` is the default: the product's own model calls (Ask and
  * scoping) run through the fetch-based chat-completions client in `llm.ts`. `droid` and `openrouter` keep
@@ -133,8 +134,10 @@ export const MODEL_CALLS_DAY = 1000;
 
 /** A caller group's own ceiling inside the shared budget, named for its refusal. Its calls count against the group's
  * windows and against the global ones, and a group at its ceiling is refused while the global capacity it leaves stays
- * for every caller outside the group. Calls from outside the group are not counted against the group. */
-export type ModelCallAllowance = { readonly name: string; readonly callers: readonly string[]; readonly perMinute: number; readonly perDay: number };
+ * for every caller outside the group. Calls from outside the group are not counted against the group. `perKeyDay`, when
+ * given, caps each key a group call names (see `keys` on the record) at that many group calls in a rolling day. */
+export type ModelCallAllowance = { readonly name: string; readonly callers: readonly string[]; readonly perMinute: number; readonly perDay: number;
+	readonly perKeyDay?: number };
 
 /** One line of the call log every app model call shares. The START record is written before the
  * caller runs anything; the END record carries the outcome and the usage the answer reported. */
@@ -151,6 +154,9 @@ export type ModelCallRecord = {
 	/** The provider's request id and token usage for a chat-completions attempt; null or absent for the other providers. */
 	readonly requestId?: string | null;
 	readonly usage?: { readonly promptTokens: number; readonly completionTokens: number; readonly totalTokens: number } | null;
+	/** The visitor keys a group call counts under, each a digest (an account or an address, never the raw value). Only the
+	 * START record of a call that named keys carries them; the per-key ceiling of the call's allowance counts them. */
+	readonly keys?: readonly string[];
 };
 
 export type ModelCallLog = {
@@ -270,6 +276,12 @@ Promise<{ ok: true } | { ok: false; reason: "BUDGET"; detail?: string }> {
 			const group = starts.filter(record => allowance.callers.includes(record.caller));
 			if (within(group, 60_000) >= allowance.perMinute || within(group, 86_400_000) >= allowance.perDay) {
 				return refused(`the ${allowance.name} allowance inside the shared model budget is spent for now`);
+			}
+			// Each key the call names counts only the group's own calls that named it: a key at its day ceiling refuses the call.
+			const perKeyDay = allowance.perKeyDay;
+			const keyed = (key: string) => group.filter(record => record.keys?.includes(key) === true);
+			if (perKeyDay !== undefined && (call.keys ?? []).some(key => within(keyed(key), 86_400_000) >= perKeyDay)) {
+				return refused(PER_KEY_DAY_DETAIL);
 			}
 		}
 		return null;

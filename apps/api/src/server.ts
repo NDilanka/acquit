@@ -399,7 +399,11 @@ function clientAddressOf(req: IncomingMessage): string {
 }
 /** The client address as a digest, never the address itself. */
 function ipKeyOf(address: string): string {
-	return createHash("sha256").update(address).digest("hex").slice(0, 16);
+	return digestOf(address);
+}
+/** A visitor's limit key as a digest, so the shared call log never holds an account id or an address. */
+function digestOf(value: string): string {
+	return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 /** The refusal every route that starts a demo answers from an address off the allowlist, before anything is provisioned. */
 const DEMO_PRIVATE = { error: "DEMO_PRIVATE", detail: "The live demo is private for now." };
@@ -869,13 +873,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		try {
 			// The turn is admitted by its account and by its address before the shared budget reserves, so a refused turn reserves nothing.
 			// The refusal names the window that ran out, so the browser can say which limit it was.
-			const refusal = admitSampleTurn([`account:${current.visitor?.id ?? current.handle}`, `ip:${ipKeyOf(clientAddressOf(req))}`]);
+			const limitKeys = [`account:${current.visitor?.id ?? current.handle}`, `ip:${ipKeyOf(clientAddressOf(req))}`];
+			const refusal = admitSampleTurn(limitKeys);
 			if (refusal !== null) { json(res, 429, { error: "MODEL_BUDGET", detail: refusal }); return; }
 			// A client that leaves before the answer ends the turn too: no retry starts for a response nobody reads.
 			const clientGone = new AbortController();
 			res.once("close", () => { if (!res.writableFinished) clientGone.abort(); });
-			const outcome = await withDeadline(signal => askLedgerTurn({ model: askModel, callLog: askCallLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE },
-				{ ...relayed, scope: "SAMPLE", signal }), SAMPLE_TURN_DEADLINE_MS, askTurnTimedOut, clientGone.signal);
+			// The shared call log counts the turn's model calls under the same keys, as digests, for the sample's per-visitor day.
+			const outcome = await withDeadline(signal => askLedgerTurn({ model: askModel, callLog: askCallLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE,
+				keys: limitKeys.map(digestOf) }, { ...relayed, scope: "SAMPLE", signal }), SAMPLE_TURN_DEADLINE_MS, askTurnTimedOut, clientGone.signal);
 			if (!outcome.ok) {
 				json(res, outcome.reason === "MODEL_RATE_LIMITED" || outcome.reason === "MODEL_BUDGET" ? 429
 					: outcome.reason === "MODEL_KEY_MISSING" ? 503 : outcome.reason === "MODEL_TIMEOUT" ? 504 : 502, { error: outcome.reason, detail: outcome.detail });

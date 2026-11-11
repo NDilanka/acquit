@@ -11,7 +11,7 @@ import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { ASK_SAMPLE_TURN_CONTRACT, askLedgerTurn, buildAskPrompt, type AskModelResult } from "../src/ask.ts";
 import { modelCallLog } from "../../../packages/core/src/model.ts";
-import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_ASK_TOOL_NAMES, SAMPLE_CALLER, SAMPLE_LABEL, SAMPLE_MAX_IN_FLIGHT, SAMPLE_TURNS_PER_DAY, SAMPLE_TURNS_PER_MINUTE, withDeadline } from "../src/sample-ask.ts";
+import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_ASK_TOOL_NAMES, SAMPLE_CALLER, SAMPLE_LABEL, SAMPLE_MAX_IN_FLIGHT, SAMPLE_MODEL_CALLS_PER_KEY_DAY, SAMPLE_TURNS_PER_DAY, SAMPLE_TURNS_PER_MINUTE, withDeadline } from "../src/sample-ask.ts";
 import { TURN_LIMIT_DAY_DETAIL, TURN_LIMIT_MINUTE_DETAIL } from "../../../packages/core/src/turn-limit.ts";
 import { sampleExplain } from "../src/sample-book.ts";
 
@@ -278,6 +278,37 @@ test("the sample's daily ceiling refuses sample calls for the rest of the day, a
 		const platform = await askLedgerTurn({ model, callLog }, { messages, tools: [], scope: "PLATFORM" });
 		assert.equal(platform.ok, true, "the platform's day is not the sample's");
 		assert.equal(modelCalls, 1);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("one visitor's model calls in a day stop at the per-visitor ceiling, another visitor still runs, and the call log holds the digest keys", async () => {
+	const root = await mkdtemp(join(tmpdir(), "acquit-sample-ask-visitor-"));
+	try {
+		const callLog = modelCallLog(join(root, "log.jsonl"));
+		const messages = [{ id: "m1", role: "user" as const, content: "What is held?" }];
+		const now = Date.now();
+		// The visitor's calls spread over the last day, half an hour apart: the minute and the shared day are never what is full.
+		for (let call = 0; call < SAMPLE_MODEL_CALLS_PER_KEY_DAY; call += 1) {
+			await callLog.append({ at: new Date(now - 1_800_000 * (call + 1)).toISOString(), caller: SAMPLE_CALLER, jobId: null, provider: "droid",
+				model: "m", phase: "START", keys: ["account:visitor-a", "ip:address-a"] });
+		}
+		let modelCalls = 0;
+		const model = async (): Promise<AskModelResult> => {
+			modelCalls += 1;
+			return { ok: true, text: '{"message":"Nothing is held.","calls":[]}', sessionId: null, factoryCredits: null };
+		};
+		const visitor = await askLedgerTurn({ model, callLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE, keys: ["account:visitor-a", "ip:address-a"] },
+			{ messages, tools: sampleAskToolList(), scope: "SAMPLE" });
+		assert.deepEqual(visitor, { ok: false, reason: "MODEL_BUDGET", detail: "per-key-day" }, "the visitor's day of calls is spent");
+		assert.equal(modelCalls, 0, "a refused turn runs no model call");
+		const other = await askLedgerTurn({ model, callLog, caller: SAMPLE_CALLER, allowance: SAMPLE_ALLOWANCE, keys: ["account:visitor-b", "ip:address-b"] },
+			{ messages, tools: sampleAskToolList(), scope: "SAMPLE" });
+		assert.equal(other.ok, true, "another visitor still runs");
+		const records = await callLog.records();
+		const started = records.filter(record => record.phase === "START" && record.keys?.includes("account:visitor-b") === true);
+		assert.deepEqual(started.map(record => record.keys), [["account:visitor-b", "ip:address-b"]], "the admitted turn's START names its keys");
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
