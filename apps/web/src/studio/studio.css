@@ -8,7 +8,7 @@
 /* Studio normally positions fixed tracks absolutely. Reflow only the compact reading view, not the
    editor or saved coordinates. Query the canvas itself so opening/resizing Ask also reflows tiles.
    The !important declarations override Studio's inline canvas height and widget width. */
-@container studio-canvas (max-width: 1120px) {
+@container studio-canvas (max-width: 860px) {
   .studio-flow .ag-studio-layout-canvas { height: auto !important; min-height: 0 !important; }
   .studio-flow .ag-studio-layout-content-container:has(> .ag-studio-layout-widget) { position: relative; inset: auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
   .studio-flow .ag-studio-layout-widget { position: static; width: auto !important; min-width: 0; min-height: 160px; }

@@ -241,3 +241,15 @@ test("a code job's receipt keeps its visible and hidden test wording, pull reque
   assert.match(page, /<h2>Verifier score card<\/h2>/);
   assert.match(page, /\{attemptLine\(attempt, r\.verdict\.attemptsAllowed\)\}/);
 });
+
+test("laser PayPal ID chips wrap within their card without changing code receipt rows", () => {
+  const page = readFileSync(new URL("./pages/PublicReceipt.tsx",import.meta.url),"utf8");
+  const css = readFileSync(new URL("./public-receipt.css",import.meta.url),"utf8");
+  const ids = page.slice(page.indexOf("{ids.length > 0"),page.indexOf("{!laser && ("));
+  assert.match(ids,/<section className="card pad money">/);
+  assert.match(ids,/<div className=\{laser \? "rows laser-receipt-ids" : "rows"\}>/);
+  assert.match(ids,/\{line\.id !== null && <IdChip value=\{line\.id\} \/>\}/);
+  assert.equal((page.match(/laser-receipt-ids/g) ?? []).length,1,"only the laser PayPal rows get the new class");
+  assert.match(css,/\.laser-receipt-ids > div \{ flex-wrap: wrap; gap: var\(--space-3\); align-items: flex-start; \}/);
+  assert.match(css,/\.laser-receipt-ids \.idchip \{ display: block; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; \}/);
+});
