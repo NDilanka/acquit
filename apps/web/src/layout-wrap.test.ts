@@ -93,3 +93,29 @@ test("compact stat runs fill their last row without a stat-count or column-count
   assert.match(compact,/\.ag-studio-layout-widget:not\(:has\(\[data-widget-kind="stat"\]\)\) \{ flex-basis: 100%; \}/);
   assert.doesNotMatch(compact,/grid-template-columns|grid-column|nth-(?:child|last-child|of-type)|:last-child/);
 });
+
+test("compact custom tiles grow from in-flow content instead of fixed height or block-size containment", () => {
+  const studio = readFileSync(new URL("./studio/studio.css",import.meta.url),"utf8");
+  const compact = studio.match(/@container studio-canvas \(max-width: 860px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  const rule = (selector: string) => compact.split("\n").find(line => line.trim().startsWith(`${selector} {`)) ?? "";
+  const tile = rule(".studio-flow .ag-studio-layout-widget");
+  assert.match(tile,/height: auto !important/);
+  assert.match(tile,/container-type: inline-size/);
+  assert.match(tile,/min-height: 160px/);
+  assert.match(rule(".studio-flow .ag-studio-layout-widget-content:has(.studio-widget)"),/position: relative; inset: auto/);
+  assert.match(rule(".studio-flow .studio-widget"),/height: auto; min-height: 0; overflow: visible/);
+  assert.match(rule(".studio-flow .studio-value"),/min-width: 0; white-space: normal; overflow-wrap: anywhere/);
+  for (const [, , value] of compact.matchAll(/(?:^|[;{])\s*((?:max-)?height):\s*([^;}]+)/g)) {
+    assert.match(value ?? "",/^(?:auto|none)(?:\s*!important)?\s*$/,"compact tiles must not acquire a fixed or maximum height");
+  }
+});
+
+test("compact verdict headers wrap at words and Grid measures their height without collapsing its scrollport", () => {
+  const studio = readFileSync(new URL("./studio/studio.css",import.meta.url),"utf8");
+  const widgets = readFileSync(new URL("./studio/dashboards.tsx",import.meta.url),"utf8");
+  const compact = studio.match(/@container studio-canvas \(max-width: 860px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  assert.match(compact,/\.studio-flow \.verdict-grid \.ag-root-wrapper \{ min-height: 240px; \}/);
+  assert.match(compact,/\.studio-flow \.changes-grid \.ag-root-wrapper \{ min-height: 180px; \}/);
+  assert.match(compact,/\.studio-flow \.verdict-grid \.ag-header-cell-text \{ white-space: normal; overflow-wrap: normal; \}/);
+  assert.match(widgets,/const VERDICT_DEFAULTS:[^\n]*autoHeaderHeight: true/);
+});
