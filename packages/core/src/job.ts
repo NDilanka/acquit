@@ -36,7 +36,7 @@ import { CODE_VERTICAL } from "./outcome.ts";
 import type { Vertical } from "./outcome.ts";
 import { reasonCode } from "./score-card.ts";
 import { describeRejectReason, VERIFIER_RUN_MINUTES } from "./verifier.ts";
-import type { DefinitionOfDone, RunFailure, SealedHiddenCases, TestTally, Verdict, VerifierReport, VerifierRunId } from "./verifier.ts";
+import type { DefinitionOfDone, PhysicalDefinition, RunFailure, SealedHiddenCases, TestTally, Verdict, VerifierReport, VerifierRunId } from "./verifier.ts";
 import { resolveHiddenReveal } from "./hidden-seal.ts";
 import { isHouseClient, isStarterJob } from "./house-client.ts";
 import type { PrivateCaseReader, RevealedHiddenCases } from "./hidden-seal.ts";
@@ -1840,6 +1840,8 @@ export type ContractProjection = {
 	readonly protectedPaths: readonly string[];
 	/** The salted digest of an AI-drafted per-job case set, frozen at approval. Absent on a fixture's curated set, so an unsealed contract keeps its existing shape. The cases and the salt are never projected here. */
 	readonly sealedHiddenCases?: SealedHiddenCases;
+	/** A physical job's public delivery: its workflow, the file it delivers, the spec it reads and that spec's digest. Absent on a code job, so its JSON keeps its shape. The sealed checks are never projected. */
+	readonly physical?: PhysicalDefinition;
 };
 
 /** The projection core adds on top of JobView. The web page and the CLI read it through the API JSON. */
@@ -1891,6 +1893,11 @@ export function houseLine(rows: { readonly total: number; readonly paid: number 
 	return `${rows.total} fixes, ${rows.paid} passed verified CI`;
 }
 
+/** The physical block a viewer reads, picked field by field so the stored block never projects more than these four. */
+function publicPhysicalOf(physical: PhysicalDefinition): PhysicalDefinition {
+	return { workflow: physical.workflow, deliveryPath: physical.deliveryPath, publicSpec: physical.publicSpec, specDigest: physical.specDigest };
+}
+
 /** Bidding shows proof first. After accept, the ledger spine leads. */
 export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap<OperatorId, number>,
 	houseRows?: ReadonlyMap<OperatorId, { readonly total: number; readonly paid: number }>,
@@ -1923,7 +1930,8 @@ export function projectJob(row: JobRow, viewer: Actor, paidReceipts: ReadonlyMap
 		contract: done === null ? null : { repository: done.issue.repository, issue: done.issue.number, frozenAt: done.frozenAt,
 			frozenTestPath: done.frozenTestPath, frozenTests: done.frozenTests.length,
 			hiddenTests: done.hiddenTests.length, hiddenManifest: done.hiddenManifest, protectedPaths: done.protectedPaths.map(String),
-			...(done.sealedHiddenCases === undefined ? {} : { sealedHiddenCases: done.sealedHiddenCases }) },
+			...(done.sealedHiddenCases === undefined ? {} : { sealedHiddenCases: done.sealedHiddenCases }),
+			...(done.physical === undefined ? {} : { physical: publicPhysicalOf(done.physical) }) },
 		hiddenReveal: resolveHiddenReveal({ id: row.id, status: state.status, sealed: done?.sealedHiddenCases ?? null }, privateCases),
 		bids: { operators: ranked.operators.map(viewBid), house: ranked.house ? viewBid(ranked.house) : null },
 		lockedTo: held?.payee.operator ?? (state.status === "PAID" || state.status === "REFUNDED" ? state.payee.operator : null),
