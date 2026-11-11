@@ -204,13 +204,25 @@ test("open for bids: the timeline shows the frozen contract with no time, then e
       at: null,
       kind: "BID",
       title: "devon bid 360.00 USD",
-      detail: "2 days. 4 verified receipts. Pending.",
+      detail: "The bid offers delivery in 2 days. The operator's record shows 4 verified receipts. The bid is pending.",
       tone: "open",
       ids: [{ value: "bid_devon" }],
       href: null,
       reasons: [],
     },
   ]);
+});
+
+test("bid proof is a sentence using the stored delivery terms, receipt count and status", () => {
+  for (const count of [0,1,4]) {
+    const job = {...BASE,bids:{operators:[bid({eta:72,paidReceipts:count,status:"ACCEPTED"})],house:null}};
+    const event = timelineEvents(job).find(entry => entry.kind === "BID");
+    assert.equal(event?.detail,`The bid offers delivery in 3 days. The operator's record shows ${count} verified receipt${count === 1 ? "" : "s"}. The bid is accepted.`);
+    assert.equal(event?.at,null);
+  }
+  const house = bid({label:"HOUSE",houseLine:"12 stored CI passes",status:"PENDING"});
+  assert.equal(timelineEvents({...BASE,bids:{operators:[],house}})[0]?.detail,
+    "The bid offers delivery in 2 days. The House record shows 12 stored CI passes. The bid is pending.");
 });
 
 test("held in escrow: the operator is asked to deliver, and the verifier counts appear in the line", () => {
@@ -590,7 +602,7 @@ test("a House bid reads as the House, with its receipts line", () => {
       at: null,
       kind: "BID",
       title: "House: ledger bid 300.00 USD",
-      detail: "1 day. 41 fixes, 39 passed verified CI. Pending.",
+      detail: "The bid offers delivery in 1 day. The House record shows 41 fixes, 39 passed verified CI. The bid is pending.",
       tone: "open",
       ids: [{ value: "bid_house" }],
       href: null,

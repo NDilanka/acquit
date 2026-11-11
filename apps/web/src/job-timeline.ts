@@ -82,11 +82,12 @@ export function timelineEvents(job: TimelineJob): TimelineEvent[] {
   }
 
   for (const bid of allBids(job)) {
+    const record = bid.label === "HOUSE" ? `The House record shows ${proofLine(bid)}` : `The operator's record shows ${proofLine(bid)}`;
     events.push({
       at: null,
       kind: "BID",
       title: `${bidder(bid)} bid ${usd(bid.price)}`,
-      detail: `${eta(bid.eta)}. ${proofLine(bid)}. ${bidStatusWord(bid.status)}.`,
+      detail: `The bid offers delivery in ${eta(bid.eta)}. ${record}. The bid is ${bidStatusWord(bid.status).toLowerCase()}.`,
       tone: "open",
       ids: [{ value: bid.id }],
       href: null,
