@@ -234,6 +234,14 @@ test("held in escrow: the operator is asked to deliver, and the verifier counts 
   assert.equal(canDeliver(job, CLIENT), false);
 });
 
+test("held in escrow: a PayPal check line rides on the held payment only", () => {
+  const job = locked({});
+  assert.equal(timelineEvents(job).some((event) => "paypalLine" in event), false);
+  const events = timelineEvents(job, "PayPal confirms 378.00 USD is held · order 8AB… · PayPal sandbox");
+  assert.deepEqual(events.filter((event) => event.paypalLine !== undefined).map((event) => event.kind), ["HELD"]);
+  assert.equal(events.find((event) => event.kind === "HELD")?.paypalLine, "PayPal confirms 378.00 USD is held · order 8AB… · PayPal sandbox");
+});
+
 test("held in escrow: a job with no contract still tells the operator to deliver", () => {
   const job = locked({ contract: null });
   assert.equal(nextStep(job, DEVON), "Deliver the commit with the steps below.");

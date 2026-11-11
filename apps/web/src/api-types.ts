@@ -546,6 +546,15 @@ export type JobDiff = {
 /** `GET /api/jobs/:id` only: the job response plus the House run's diff, null when the job has none. */
 export type JobDetailResponse = JobResponse & { readonly diff: JobDiff | null };
 
+/** `GET /api/jobs/:id/paypal-check`: the job's stored PayPal check, or null. Mirrors apps/api/src/paypal-check.ts; the page reads these fields only. */
+export type JobPayPalCheck = {
+  readonly orderId: string;
+  readonly checkedAt: string;
+  readonly outcome: "HELD" | "NOT_HELD" | "UNAVAILABLE";
+  readonly heldValue: string | null;
+  readonly heldCurrency: string | null;
+};
+
 /** One judged attempt. A VERIFIED one carries the test tallies; a REJECTED one carries the reasons and its tallies, null when a screen or a subject fault decided the run. */
 export type Attempt = { readonly ordinal: number; readonly sourceCommit: string; readonly at: string } & (
   | { readonly result: "REJECTED"; readonly reasons: readonly string[]; readonly reasonsTruncated: number;

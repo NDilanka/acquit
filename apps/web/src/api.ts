@@ -11,6 +11,7 @@ import type {
   FigureTrace,
   FundingMode,
   JobDetailResponse,
+  JobPayPalCheck,
   JobView,
   OperatorEscrowRow,
   OperatorView,
@@ -112,6 +113,8 @@ export const api = {
       status ? `/api/jobs?status=${encodeURIComponent(status)}` : "/api/jobs",
     ),
   job: (id: string) => request<JobDetailResponse>("GET", `/api/jobs/${encodeURIComponent(id)}`),
+  jobPayPalCheck: (id: string, init?: CallOptions) =>
+    request<{ check: JobPayPalCheck | null }>("GET", `/api/jobs/${encodeURIComponent(id)}/paypal-check`, undefined, init),
   chooseJobFunding: (id: string, mode: FundingMode, init?: CallOptions) =>
     request<{ mode: FundingMode }>("POST", `/api/jobs/${encodeURIComponent(id)}/funding`, { mode }, init),
   scoping: (id: string) => request<ScopingResponse>("GET", `/api/jobs/${encodeURIComponent(id)}/scoping`),

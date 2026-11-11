@@ -10,6 +10,7 @@ import { deadlineOutcome, escrowFee, eta, refundNote, usd, utc } from "../format
 import { AcquitGrid } from "../grid";
 import { bidStatusWord, operatorJobCrumb, payoutHeldBy, runFailureWord } from "../job-status";
 import { canDeliver, nextStep, timelineEvents, verifierLine, type TimelineJob, type Viewer } from "../job-timeline";
+import { payPalCheckLine, usePayPalCheck } from "../job-paypal-check";
 import { useIntent } from "../intent";
 import { pollInterval } from "../poll";
 import { PAYMENT_BOUND, PaymentChoice, paymentAcceptLabel, paymentChoiceFailure, paymentChoiceState } from "../payment-choice";
@@ -90,6 +91,9 @@ export function JobPage({ id }: { id: string }) {
   useEffect(() => {
     if (checkout && job?.approveUrl) window.location.assign(job.approveUrl);
   }, [checkout, job?.approveUrl]);
+
+  // PayPal's check of the held payment. The page never waits on it: the timeline draws without the line until it arrives.
+  const paypalLine = payPalCheckLine(usePayPalCheck(job, { role: user.role, handle: user.handle }));
 
   if (missing && !job) return <NotFound signedIn title="Job not found" message="No job has this id, or your account cannot open it." />;
   if (error && !job) {
@@ -384,7 +388,7 @@ export function JobPage({ id }: { id: string }) {
           )}
 
           <Timeline
-            events={timelineEvents(timeline)}
+            events={timelineEvents(timeline, paypalLine)}
             verifier={showsVerifier(job) ? <Verifier job={timeline} diff={diff} locked={locked} readOnly={settledStatuses.includes(job.status)} /> : null}
           />
         </div>
