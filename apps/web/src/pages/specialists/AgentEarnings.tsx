@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { api } from "../../api.ts";
 import { Link } from "../../router.tsx";
+import { receiptPageHref } from "../../receipt-view.ts";
 import { useOwner } from "./OwnerPanel.tsx";
 import { SpecialistPage } from "./SpecialistPage.tsx";
 import { useReport } from "./useReport.ts";
@@ -17,9 +19,32 @@ export function AgentEarningsPage() {
   return <Earnings key={agent?.id ?? "workspace"} />;
 }
 
+/**
+ * The public receipt id of each job this operator settled, keyed by job id. The book is operator-only, so a
+ * visitor it refuses gets an empty map, and the payout keeps its link to the work's proof.
+ */
+function useReceiptIds(): ReadonlyMap<string, string> {
+  const [ids, setIds] = useState<ReadonlyMap<string, string>>(() => new Map());
+  useEffect(() => {
+    let live = true;
+    api.receipts().then(
+      (body) => {
+        if (!live) return;
+        const byJob = new Map<string, string>();
+        for (const row of body.receipts) if (row.jobId !== null) byJob.set(row.jobId, row.id);
+        setIds(byJob);
+      },
+      () => { /* No book for this account: no receipt link, the proof link stays. */ },
+    );
+    return () => { live = false; };
+  }, []);
+  return ids;
+}
+
 function Earnings() {
   const { agent, announce, activity, agentDetails:totals } = useOwner();
   const report = useReport();
+  const receiptIds = useReceiptIds();
   useEffect(() => { announce(report.error ? "Earnings did not load." : report.data ? "Earnings loaded." : "Loading earnings."); }, [report.data, report.error, announce]);
   const data = report.data;
   const events = data ? earningsEvents(data) : [];
@@ -69,6 +94,7 @@ function Earnings() {
               ? {...lane,label:jobFacts(lane.id,data,activity.data?.activity).title} : lane)} through={report.through} />}
             {data.payouts.map((payout) => {
               const facts = jobFacts(payout.jobId,data,activity.data?.activity);
+              const receiptId = receiptIds.get(payout.jobId);
               return <div className="earnings-reference" key={`${payout.reference}:${payout.jobId}`}>
               <h2>Payment breakdown</h2>
               <dl className="payment-breakdown">
@@ -77,6 +103,7 @@ function Earnings() {
                 <div><dt>Released</dt><dd>{dollars(payout.amountCents)}</dd></div>
               </dl>
               <p><Link to={releasedWorkHref(payout.jobId,activity.data?.activity)}>{facts.title} · proof · PayPal sandbox</Link></p>
+              {receiptId !== undefined && <p><Link to={receiptPageHref(receiptId)}>Public receipt</Link></p>}
               <p className="muted">Reference <code>{payout.reference.match(/.{1,4}/g)?.join(" ")}</code></p>
               <CopyWorkValue value={payout.reference} label="Copy reference" />
             </div>;})}
