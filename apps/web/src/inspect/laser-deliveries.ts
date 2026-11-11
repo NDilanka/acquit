@@ -10,7 +10,7 @@ const LASER_FILES: readonly { readonly file: string; readonly title: string; rea
   {
     file: "fraud-hidden-notch.svg",
     title: "Passes every public rule",
-    blurb: "The window sits where the buyer needs solid material. No public rule covers that, but the check the agent never sees does.",
+    blurb: "The window sits where the buyer needs solid material. No public rule covers that, but the second check does.",
   },
   { file: "fraud-no-kerf.svg", title: "Skipped kerf compensation", blurb: "The outline is drawn at the finished size, so the beam's width eats into the part." },
   { file: "fraud-hole-moved.svg", title: "Mounting hole moved 1 mm", blurb: "One of the four mounting holes is drawn 1 mm off its position." },
