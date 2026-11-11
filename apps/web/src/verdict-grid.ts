@@ -60,17 +60,23 @@ export function totalsRow(jobs: readonly PlatformJobLedger[]): TotalsRow {
   return { kind: "totals", id: "totals", ...fundedConserves(jobs) };
 }
 
-/**
- * Each judged attempt's share of the tests it counted, frozen and hidden together, in ordinal order.
- * An attempt with no counts on either suite is skipped, so a rejection the screen decided is not a zero.
- */
-export function sparkPoints(attempts: readonly Pick<PlatformAttempt, "ordinal" | "frozen" | "hidden">[]): readonly number[] {
-  return [...attempts].sort(byOrdinal).flatMap((attempt) => {
+export type PassingTests = { readonly text: string; readonly points: readonly number[] };
+
+/** Latest recorded counts and the passing-share history; an uncounted rejection is not a zero. */
+export function passingTests(attempts: readonly Pick<PlatformAttempt, "ordinal" | "frozen" | "hidden">[]): PassingTests {
+  const counts = [...attempts].sort(byOrdinal).flatMap((attempt) => {
     const tallies = [attempt.frozen, attempt.hidden].filter((tally): tally is TestTally => tally !== null);
     const expected = tallies.reduce((sum, tally) => sum + tally.expected, 0);
     if (expected === 0) return [];
-    return [tallies.reduce((sum, tally) => sum + tally.passed, 0) / expected];
+    return [{ passed: tallies.reduce((sum, tally) => sum + tally.passed, 0), expected }];
   });
+  const latest = counts.at(-1);
+  return { text: latest ? `${latest.passed}/${latest.expected}` : "No counts yet", points: counts.map(({ passed, expected }) => passed / expected) };
+}
+
+/** Each counted attempt's passing share, frozen and hidden together, in ordinal order. */
+export function sparkPoints(attempts: readonly Pick<PlatformAttempt, "ordinal" | "frozen" | "hidden">[]): readonly number[] {
+  return passingTests(attempts).points;
 }
 
 /** The polyline points for a sparkline: each ratio drawn from the bottom to the top, with a 2 px margin. One point sits mid-width. */
@@ -138,29 +144,34 @@ export function payPalIds(job: PlatformJobLedger): readonly { readonly label: st
   ];
 }
 
-/**
- * The wide grid's column floors in px, read as minimum widths, one per column in VERDICT_COLUMNS. Each floor is the
- * widest hosted value measured in the browser (Inter 13px) plus the cell's 20px padding. The floors sum past the 1128px
- * tile at 1600, so the grid scrolls sideways there instead of clipping; see the test that records the sum.
- */
+/** Compact floors include 16px of cell padding; long titles ellipsize and verdict/status words wrap. */
 export const VERDICT_MIN_WIDTHS = {
-  /** "Totals round wrong for 3-decimal currencies" (271px bold), with the caret and its gap. */
-  job: 312,
-  /** "guest-9d5966e1880b-ops" (162px). */
-  operator: 186,
-  /** "Verified, awaiting release". */
-  status: 170,
-  /** "Not funded"; "Released" measures 57px. */
-  escrow: 90,
-  /** The 96px passing sparkline. */
-  passing: 120,
-  /** "Rejected, tamper caught" (153px). */
-  last: 176,
-  /** "Not recorded" in the mono face. */
-  paid: 108,
-  /** Two PayPal id chips, each capped at 10ch by `.verdict-chip` (payout item ids run to 60 characters). */
+  job: 216,
+  status: 136,
+  /** The 96px sparkline, below the always-visible counts. */
+  passing: 112,
+  last: 144,
+  escrow: 88,
+  paid: 104,
+  operator: 180,
   ids: 188,
 } as const;
+
+export const VERDICT_COLUMN_PRIORITY = ["job", "status", "passing", "last", "escrow", "paid", "operator", "ids"] as const;
+export type VerdictColumn = (typeof VERDICT_COLUMN_PRIORITY)[number];
+
+/** Keep a prefix of the priority list, so a smaller low-priority column never displaces a verdict. */
+export function verdictColumnsForWidth(width: number): VerdictColumn[] {
+  if (!Number.isFinite(width) || width <= 0) return [];
+  const visible: VerdictColumn[] = [];
+  let used = 0;
+  for (const column of VERDICT_COLUMN_PRIORITY) {
+    used += VERDICT_MIN_WIDTHS[column];
+    if (used > Math.floor(width)) break;
+    visible.push(column);
+  }
+  return visible;
+}
 
 /** One job in the narrow layout: the facts its wide row shows, in words, with the passing shares and the PayPal ids as values. */
 export type JobCard = {
@@ -171,14 +182,14 @@ export type JobCard = {
   readonly status: string;
   readonly escrow: string;
   readonly lastVerdict: string;
-  readonly passing: readonly number[];
+  readonly passing: PassingTests;
   readonly paidCents: number | null;
   readonly paypalIds: readonly { readonly label: string; readonly id: string }[];
 };
 
 export function jobCard(job: PlatformJobLedger): JobCard {
   return { jobId: job.jobId, title: job.title, tenant: job.tenant, status: platformStatusWord(job.status), escrow: escrowWord(job.escrow),
-    lastVerdict: lastVerdictWords(job), passing: sparkPoints(job.attempts), paidCents: job.paidCents, paypalIds: payPalIds(job) };
+    lastVerdict: lastVerdictWords(job), passing: passingTests(job.attempts), paidCents: job.paidCents, paypalIds: payPalIds(job) };
 }
 
 /** The narrow layout's rows: a job row becomes its card, and the group headers and attempt lines pass through unchanged. */

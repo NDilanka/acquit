@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { PlatformAttempt, PlatformJobLedger } from "./api-types.ts";
 import { escrowTotals } from "./studio-data.ts";
 import {
+  VERDICT_COLUMN_PRIORITY,
   VERDICT_MIN_WIDTHS,
   attemptWords,
   cardRows,
@@ -12,12 +13,14 @@ import {
   jobCard,
   lastAttempt,
   payPalIds,
+  passingTests,
   platformStatusWord,
   sparkCoords,
   sparkPoints,
   toggleExpanded,
   totalsRow,
   verdictRows,
+  verdictColumnsForWidth,
   type GroupRow,
 } from "./verdict-grid.ts";
 
@@ -127,6 +130,21 @@ test("sparkPoints gives each judged attempt's passed share, frozen and hidden to
   ]), [0.5, 0.625]);
 });
 
+test("passing tests show the latest recorded counts, sum both suites, and retain ordinal history", () => {
+  assert.deepEqual(passingTests([attempt(1, { hidden: null })]), { text: "48/48", points: [1] });
+  assert.deepEqual(passingTests([attempt(3), attempt(1, { frozen: { expected: 2, passed: 1 }, hidden: null })]),
+    { text: "54/54", points: [0.5, 1] });
+  assert.deepEqual(passingTests(HELD.attempts), { text: "53/54", points: [53 / 54] });
+});
+
+test("missing or zero expected counts stay explicit and do not invent a plotted failure", () => {
+  assert.deepEqual(passingTests([]), { text: "No counts yet", points: [] });
+  assert.deepEqual(passingTests([attempt(1, { frozen: null, hidden: { expected: 0, passed: 0 } })]),
+    { text: "No counts yet", points: [] });
+  assert.deepEqual(passingTests([attempt(2, { frozen: null, hidden: null }), attempt(1)]),
+    { text: "54/54", points: [1] });
+});
+
 test("sparkCoords draws a ratio from the bottom to the top, one point mid-width", () => {
   assert.equal(sparkCoords([1, 0], 100, 20), "2,2 98,18");
   assert.equal(sparkCoords([0.5], 100, 20), "50,10");
@@ -162,12 +180,12 @@ test("the verdict timeline uses only AG Grid Community APIs: no Enterprise modul
 
 test("a narrow card reads the wide row's facts in words: status, escrow, last verdict, passing shares, paid, and PayPal ids", () => {
   assert.deepEqual(jobCard(PAID), {
-    jobId: "job_paid", title: "Paid job", tenant: null, status: "Paid", escrow: "Released", lastVerdict: "Verified", passing: [1], paidCents: 42000,
+    jobId: "job_paid", title: "Paid job", tenant: null, status: "Paid", escrow: "Released", lastVerdict: "Verified", passing: { text: "54/54", points: [1] }, paidCents: 42000,
     paypalIds: [{ label: "PayPal capture", id: "CAP_PAID" }, { label: "PayPal payout item", id: "payout-item-1" }],
   });
   const open = jobCard(OPEN);
   assert.deepEqual({ escrow: open.escrow, lastVerdict: open.lastVerdict, passing: open.passing, paidCents: open.paidCents, paypalIds: open.paypalIds },
-    { escrow: "Not funded", lastVerdict: "No verdict yet", passing: [], paidCents: null, paypalIds: [] });
+    { escrow: "Not funded", lastVerdict: "No verdict yet", passing: { text: "No counts yet", points: [] }, paidCents: null, paypalIds: [] });
   assert.deepEqual(payPalIds(HELD), [{ label: "PayPal capture", id: "CAP_HELD" }]);
 });
 
@@ -192,10 +210,51 @@ test("every wide column has a floor from VERDICT_MIN_WIDTHS, and every floor bel
   }
 });
 
-test("the floors sum to 1350px, 222px past the 1128px tile at 1600: each floor fits its widest hosted value, so the grid scrolls sideways", () => {
-  const sum = Object.values(VERDICT_MIN_WIDTHS).reduce((total, px) => total + px, 0);
-  assert.equal(sum, 1350, "the documented sum of the floors");
-  assert.equal(sum - 1128, 222, "the overrun the grid scrolls by at 1600");
+test("column thresholds keep the requested priority and drop PayPal ids first", () => {
+  assert.deepEqual(VERDICT_COLUMN_PRIORITY, ["job", "status", "passing", "last", "escrow", "paid", "operator", "ids"]);
+  const thresholds = [216, 352, 464, 608, 696, 800, 980, 1168];
+  for (const [index, width] of thresholds.entries()) {
+    assert.deepEqual(verdictColumnsForWidth(width), VERDICT_COLUMN_PRIORITY.slice(0, index + 1), `at ${width}px`);
+    assert.deepEqual(verdictColumnsForWidth(width - 0.1), VERDICT_COLUMN_PRIORITY.slice(0, index), `below ${width}px`);
+  }
+});
+
+test("every measured body width fits the longest possible priority prefix, including narrow Ask tiles", () => {
+  for (let width = 1; width <= 1800; width++) {
+    const columns = verdictColumnsForWidth(width);
+    const used = columns.reduce((sum, column) => sum + VERDICT_MIN_WIDTHS[column], 0);
+    assert.ok(used <= width, `${width}px: ${used}px of columns cannot overrun`);
+    assert.deepEqual(columns, VERDICT_COLUMN_PRIORITY.slice(0, columns.length));
+    const next = VERDICT_COLUMN_PRIORITY[columns.length];
+    if (next) assert.ok(used + VERDICT_MIN_WIDTHS[next] > width, `${width}px: the next priority cannot fit`);
+  }
+  for (const [width, count] of [[624, 4], [696, 5], [720, 5], [800, 6], [858, 6], [880, 6], [888, 6], [980, 7], [1048, 7], [1128, 7], [1168, 8]] as const) {
+    assert.equal(verdictColumnsForWidth(width).length, count, `${width}px body width`);
+  }
+  for (const width of [0, -1, NaN, Infinity]) assert.deepEqual(verdictColumnsForWidth(width), []);
+});
+
+test("initial render, resizing Ask, and changed row viewports refit from the grid body, not the screen", () => {
+  const dashboards = readFileSync(new URL("./studio/dashboards.tsx", import.meta.url), "utf8");
+  assert.match(dashboards, /api\.getHorizontalPixelRange\(\)/);
+  assert.match(dashboards, /verdictColumnsForWidth\(right - left\)/);
+  assert.match(dashboards, /api\.setColumnsVisible\(VERDICT_COLUMN_PRIORITY\.filter/);
+  assert.match(dashboards, /api\.setColumnsVisible\(visible, true\)/);
+  for (const event of ["onGridSizeChanged", "onFirstDataRendered", "onViewportChanged"]) {
+    assert.match(dashboards, new RegExp(`${event}=\\{fitVerdictColumns\\}`));
+  }
+  assert.match(dashboards, /wrapHeaderText: true, autoHeaderHeight: true/);
+});
+
+test("the job's two lines fit the row: 18px title, 16px id, and 16px cell padding inside 56px", () => {
+  const dashboards = readFileSync(new URL("./studio/dashboards.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("./studio/studio.css", import.meta.url), "utf8");
+  const jobHeight = Number(dashboards.match(/const VERDICT_HEIGHT:[^\n]*job: (\d+)/)?.[1]);
+  assert.ok(jobHeight >= 18 + 16 + 16 + 1, "both lines and the border fit");
+  assert.match(css, /\.verdict-grid \.ag-cell \{[^}]*padding: 8px;[^}]*line-height: 18px/);
+  assert.match(css, /\.verdict-grid \.verdict-title small \{[^}]*line-height: var\(--leading-xs\)/);
+  assert.match(css, /\.verdict-grid \.verdict-title b, \.verdict-grid \.verdict-title small \{[^}]*text-overflow: ellipsis; white-space: nowrap/);
+  assert.match(dashboards, /<b title=\{job\.title\}>/);
 });
 
 test("the timeline does not suppress horizontal scroll, so a column below its floor scrolls instead of clipping", () => {
