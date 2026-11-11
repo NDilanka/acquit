@@ -14,8 +14,8 @@ test("checking has distinct code/print honesty copy and links to the inspector",
   assert.match(source, /Verified is not automatic payment/);
   assert.match(source, /<Link className="text-button" to="\/inspect">Try to cheat the checker<\/Link>/);
   assert.match(source, /the machine run is simulated/);
-  assert.match(source, /Print and laser exams are simulated\./);
-  assert.doesNotMatch(source, /Print and laser exams are coming/);
+  assert.match(source, /Print exams are coming\. Paid laser jobs are checked by the real laser checker on Acquit's server\./);
+  assert.doesNotMatch(source, /Print and laser exams are/);
   assert.doesNotMatch(source, /<iframe|dangerouslySetInnerHTML/);
 });
 test("embedded print uses the owner's single announcement channel", () => {
