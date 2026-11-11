@@ -769,6 +769,91 @@ test("the work port keeps the askpass secret alive from prepare through the push
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+/** A fake git for one dirty checkout whose submission commit carries `change` as its diff. Every push is
+ * recorded, so a test can see whether anything reached the work repo. */
+function changeGit(change: { readonly status: number; readonly stdout: string }, pushes: string[]): GitRun {
+	const frozen = "a3b6ead29f4e367d1871e753b516cc9e832871e4";
+	const submitted = "b4c7fbe30a5f478e2982f862c627df0e943982f5";
+	let committed = false;
+	return (args) => {
+		if (args.includes("push")) pushes.push("push");
+		if (args.includes("clone")) {
+			const gitDir = args[args.indexOf("--separate-git-dir") + 1];
+			const workTree = args.at(-1) as string;
+			mkdirSync(gitDir, { recursive: true, mode: 0o700 });
+			mkdirSync(workTree, { recursive: true, mode: 0o700 });
+			writeFileSync(join(workTree, ".git"), `gitdir: ${gitDir}\n`, { mode: 0o644 });
+			return { status: 0, stdout: "", stderr: "" };
+		}
+		if (args.includes("commit")) committed = true;
+		if (args.includes("rev-parse")) return { status: 0, stdout: `${committed ? submitted : frozen}\n`, stderr: "" };
+		if (args.includes("--porcelain")) return { status: 0, stdout: " M src/config.ts\n", stderr: "" };
+		if (args.includes("--numstat")) return { status: 0, stdout: "1\t0\0src/config.ts\0", stderr: "" };
+		if (args.includes("diff")) return { status: change.status, stdout: change.stdout, stderr: "" };
+		return { status: 0, stdout: "", stderr: "" };
+	};
+}
+
+function leakPort(root: string, git: GitRun, env: NodeJS.ProcessEnv) {
+	return gitWorkPort({
+		stateRoot: join(root, "state"), workRoot: join(root, "work"),
+		mint: async () => ({ repository: "acquit-forks/invoice-app-x", token: "GHT-TEST-TOKEN" }),
+		git, env,
+	});
+}
+
+test("a configured key in the change stops the series before the push: nothing is pushed, submitted, or logged", async () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-house-leak-"));
+	const canary = "CANARY-FIREWORKS-KEY";
+	try {
+		const pushes: string[] = [];
+		const logs: string[] = [];
+		const git = changeGit({ status: 0, stdout: `diff --git a/src/config.ts b/src/config.ts\n+const key = "${canary}";\n` }, pushes);
+		const { deps, commits } = fakeDeps(undefined, {
+			mode: houseMode({ FIREWORKS_API_KEY: canary }),
+			work: leakPort(root, git, { ...process.env, FIREWORKS_API_KEY: canary }),
+			log: line => logs.push(line),
+		});
+		assert.equal(await runHouseDelivery(deps, target), "FAILED", "the refused change ends the series");
+		assert.deepEqual(pushes, [], "nothing reaches the work repo");
+		assert.deepEqual(commits, [], "nothing is submitted");
+		assert(logs.some(line => line.includes("run failed: a credential appeared in the change; nothing was submitted")), "the refusal is logged");
+		assert(!logs.some(line => line.includes(canary)), "the key value never reaches the log");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a Fireworks-shaped key in the change is refused even when it is not the configured one", async () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-house-shape-"));
+	try {
+		const pushes: string[] = [];
+		const git = changeGit({ status: 0, stdout: "diff --git a/src/config.ts b/src/config.ts\n+const key = \"fw_CANARYSHAPE0123456789ab\";\n" }, pushes);
+		const { deps, commits } = fakeDeps(undefined, {
+			mode: houseMode({ FIREWORKS_API_KEY: "CANARY-FIREWORKS-KEY" }),
+			work: leakPort(root, git, { ...process.env, FIREWORKS_API_KEY: "CANARY-FIREWORKS-KEY" }),
+		});
+		assert.equal(await runHouseDelivery(deps, target), "FAILED", "the key-shaped string ends the series");
+		assert.deepEqual(pushes, [], "nothing reaches the work repo");
+		assert.deepEqual(commits, [], "nothing is submitted");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a change whose diff cannot be read is refused, never assumed clean", async () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-house-unread-"));
+	try {
+		const pushes: string[] = [];
+		const logs: string[] = [];
+		const git = changeGit({ status: 1, stdout: "" }, pushes);
+		const { deps, commits } = fakeDeps(undefined, {
+			work: leakPort(root, git, { ...process.env, FIREWORKS_API_KEY: "CANARY-FIREWORKS-KEY" }),
+			log: line => logs.push(line),
+		});
+		assert.equal(await runHouseDelivery(deps, target), "FAILED", "an unreadable change ends the series");
+		assert.deepEqual(pushes, [], "nothing reaches the work repo");
+		assert.deepEqual(commits, [], "nothing is submitted");
+		assert(logs.some(line => line.includes("the change could not be read for the credential check; nothing was submitted")), "the refusal is logged");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("the work port keeps preparing when the state home is unwritable", { skip: process.platform === "win32" && "the state home is XDG on POSIX; win32 reads LOCALAPPDATA, which this test does not move" }, async () => {
 	// A hardened unit (ProtectHome) hides the home directory, so the CLI state root's default under
 	// the home fails with EACCES, exactly as the VM's House prepares did before its drop-in: the

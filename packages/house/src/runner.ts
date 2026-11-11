@@ -124,6 +124,15 @@ export type HouseDelivery = {
 
 export const PATCH_CHARS_MAX = 100_000;
 
+/** A change the House refuses before anything is pushed: a credential appears in it, or the change cannot be
+ * read for that check. The message names the refusal only; it never carries a value. */
+export class ChangeRefusedError extends Error {
+	constructor(reason: string) {
+		super(reason);
+		this.name = "ChangeRefusedError";
+	}
+}
+
 export type HouseTarget = {
 	readonly id: JobId;
 	readonly title: string;
@@ -148,7 +157,8 @@ export type HouseDeliveryState = {
 };
 
 /** The work-repo side of one series: the clone at the frozen commit, and the commit-and-push that
- * produces the submission commit with its diff (null when the run left the checkout clean). */
+ * produces the submission commit with its diff (null when the run left the checkout clean). A change
+ * that carries a credential, or cannot be read for that check, throws ChangeRefusedError before any push. */
 export type HouseWorkPort = {
 	readonly prepare: (job: HouseTarget) => Promise<{ readonly workDir: string }>;
 	readonly finalize: (job: HouseTarget, workDir: string) => Promise<HouseDelivery | null>;
@@ -290,7 +300,16 @@ export async function runHouseDelivery(deps: HouseDeliveryDeps, job: HouseTarget
 			deps.log(`house: ${job.id} run failed: ${outcome.reason} ${boundedDetail(outcome.detail)}`);
 			return "FAILED";
 		}
-		const delivery = await deps.work.finalize(job, prepared.workDir);
+		// A refused change ends this series only: nothing was pushed, so nothing is submitted, and the
+		// scan goes on with the other jobs.
+		let delivery: HouseDelivery | null;
+		try {
+			delivery = await deps.work.finalize(job, prepared.workDir);
+		} catch (error) {
+			if (!(error instanceof ChangeRefusedError)) throw error;
+			deps.log(`house: ${job.id} run failed: ${error.message}`);
+			return "FAILED";
+		}
 		if (delivery === null) {
 			deps.log(`house: ${job.id} produced no changes to submit`);
 			return "NO_SUBMISSION";
@@ -584,6 +603,8 @@ export type GitWorkDeps = {
 	readonly mint: (job: HouseTarget) => Promise<{ readonly repository: string; readonly token: string }>;
 	readonly git?: GitRun;
 	readonly env?: NodeJS.ProcessEnv;
+	/** The credential values a change is checked against before it is pushed. Defaults to the House's own keys. */
+	readonly credentialValues?: () => Promise<readonly string[]>;
 };
 
 type PreparedCheckout = {
@@ -604,12 +625,34 @@ function boundedPatch(result: { status: number | null; stdout: string; stderr: s
 	return result.stdout.length > PATCH_CHARS_MAX ? `${result.stdout.slice(0, PATCH_CHARS_MAX)}\n... (truncated)` : result.stdout;
 }
 
+/** The shapes of the keys the House's providers issue. The agent can hold a key other than the one
+ * configured, so a key-shaped string in the change is refused as well as a copy of a configured value. */
+const KEY_SHAPES: readonly RegExp[] = [/fw_[A-Za-z0-9_-]{16,}/, /sk-or-v1-[A-Za-z0-9]{16,}/];
+
+/** The credential values this process holds: a copy of any of them in a change is a leak, whichever
+ * provider the run used. Read in process, never logged. */
+async function houseCredentialValues(env: NodeJS.ProcessEnv = process.env): Promise<readonly string[]> {
+	const values = [llmKey("fireworks", env), await factoryApiKey(env), keyringKey()];
+	return values.filter((value): value is string => typeof value === "string" && value !== "");
+}
+
+/** Reads the whole change the push would publish, untruncated, and refuses it when a credential appears in
+ * it. A diff the check cannot read is refused too: an unreadable change is never assumed clean. */
+function assertNoCredential(git: GitRun, session: PreparedCheckout, frozen: CommitSha, commit: CommitSha,
+	values: readonly string[]): void {
+	const diff = git(session.checkoutGitArgs(session.gitEnv, ["diff", "--no-color", "--text", frozen, commit]), session.gitEnv);
+	if (diff.status !== 0) throw new ChangeRefusedError("the change could not be read for the credential check; nothing was submitted");
+	const leaked = values.some(value => diff.stdout.includes(value)) || KEY_SHAPES.some(shape => shape.test(diff.stdout));
+	if (leaked) throw new ChangeRefusedError("a credential appeared in the change; nothing was submitted");
+}
+
 /** The real work port: the CLI's clone-at-frozen-commit and commit-and-push, driven by a scoped
  * token minted per series. The checkout's git directory lives outside the work tree, exactly as the
  * CLI keeps it, so the sandbox can never read it. */
 export function gitWorkPort(deps: GitWorkDeps): HouseWorkPort {
 	const git = deps.git ?? gitCli();
 	const env = deps.env ?? process.env;
+	const credentialValues = deps.credentialValues ?? (() => houseCredentialValues(env));
 	const sessions = new Map<JobId, PreparedCheckout>();
 	return {
 		async prepare(job) {
@@ -643,6 +686,9 @@ export function gitWorkPort(deps: GitWorkDeps): HouseWorkPort {
 			try {
 				const commit = submissionCommit(git, session.checkout, job.frozenAt, `Run ${job.id} with ${HOUSE_OPERATOR_ID}`, session.gitEnv);
 				if (commit === null) return null;
+				// The change is checked before anything leaves the checkout: a credential in it is refused,
+				// so neither the push, nor the diff record, nor the submit ever sees it.
+				assertNoCredential(git, session, job.frozenAt, commit, await credentialValues());
 				pushWork(git, session.checkout, session.url, commit, session.gitEnv, session.askpassEnv);
 				// The diff the timeline shows is read from the same checkout before it is cleaned up, so it
 				// is exactly the submitted tree's diff against the frozen commit.
