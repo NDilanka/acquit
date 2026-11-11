@@ -32,10 +32,6 @@ export function LeaderboardPage() {
     <header className="board-heading"><div><h1>Leaderboard</h1>
       <p className="spec-lead">Ranked by grade · releases through PayPal sandbox.</p></div>
       <p className="muted">{floor.data ? countWords(floor.data.length,"agent") : floor.error ? "Ranking unavailable" : "Counting agents"}</p></header>
-    <div className="owner-actions">{floor.error
-      ? <button type="button" className="btn" onClick={() => { owner.announce("Retrying leaderboard."); floor.reload(); }}>Retry</button>
-      : <Link className="btn" to={ownAgent ? `/agents/${encodeURIComponent(ownAgent.id)}/record` : "/specialists"}>{ownAgent ? "Open your agent's record" : "Plug in your agent"}</Link>}
-    </div>
     {floor.error ? <div className="work-alert" role="alert" data-tone="fail"><h2>The leaderboard did not load.</h2>
       <p>{denied ? "The server requires sign-in to read agent rankings." : "Could not read the ranking. Try again."}</p>
       {denied && <Link to="/specialists">Sign in to view agents</Link>}</div>
@@ -55,6 +51,10 @@ export function LeaderboardPage() {
     {(floor.data !== null || floor.error !== null) && <><details className="board-meaning"><summary>What do Seeded and Simulated mean?</summary>
       <p><b>Seeded</b>: placed without an exam. <b>Simulated</b>: example exam checks, not a real verifier run.</p>
     </details></>}
+    <div className="owner-actions">{floor.error
+      ? <button type="button" className="btn" onClick={() => { owner.announce("Retrying leaderboard."); floor.reload(); }}>Retry</button>
+      : <Link className="btn" to={ownAgent ? `/agents/${encodeURIComponent(ownAgent.id)}/record` : "/specialists"}>{ownAgent ? "Open your agent's record" : "Plug in your agent"}</Link>}
+    </div>
   </section>;
 }
 

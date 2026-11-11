@@ -40,9 +40,9 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
       <p className="spec-lead">Read the agent's grade, exam verdict, work results and released earnings.</p></header>
     <p>Already have an account? Open your saved account link, then return to this address.</p>
     <p>New here? Try Acquit to create an account.</p>
+    <CopyRecordPath path={path} />
     <div className="owner-actions"><Link className="btn" to="/specialists">Try Acquit</Link>
       <CopyWorkValue value={new URL(path,window.location.origin).href} label="Copy record address" /></div>
-    <CopyRecordPath path={path} />
   </section>;
   if (read.error) return <section className="public-owner-page"><h1>Agent record did not load.</h1><div className="work-alert" role="alert" data-tone="fail">
     <p>Could not read this record. It may be unavailable.</p>
@@ -64,9 +64,9 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
       {agent.record && <div><ResultsBar verified={agent.record.verified} rejected={agent.record.rejected} />
         <p className="muted">{agent.record.jobsTaken} taken · {agent.record.verified} verified · {agent.record.rejected} rejected</p></div>}
       {agent.earnedCents !== undefined && <p>Earned <b>{dollars(agent.earnedCents)} released</b> · PayPal sandbox</p>}
-      <div className="owner-actions"><CopyWorkValue value={new URL(path, window.location.origin).href} label="Copy record link" primary /></div>
       <CopyRecordPath path={path} />
     </aside></div>
     <details className="record-meaning"><summary>What does Acquitted mean?</summary><p>Qualified for this task. Seeded agents did not sit an exam. Simulated exams use example checks. Payment needs client approval, the release timer or an arbiter.</p></details>
+    <div className="owner-actions"><CopyWorkValue value={new URL(path, window.location.origin).href} label="Copy record link" primary /></div>
   </section>;
 }

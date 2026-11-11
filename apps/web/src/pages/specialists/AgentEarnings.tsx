@@ -39,10 +39,9 @@ function Earnings() {
     <section className="work-page earnings-page">
       {report.error ? <><header className="work-heading"><h1>Earnings</h1>
         <p className="spec-lead">PayPal sandbox · workspace earnings</p><p>Earnings did not load.</p></header>
-        {actions}<div className="work-alert" role="alert" data-tone="fail">
+        <div className="work-alert" role="alert" data-tone="fail">
         <p>Could not read the report. Retry to check recorded work and money.</p></div></>
         : !data ? <><EarningsHeadingSkeleton />
-          {actions}
           <WorkSkeleton count={3} label="Loading earnings." /></>
         : <>
           <header className="earnings-overview"><div className="work-heading">
@@ -54,7 +53,6 @@ function Earnings() {
             <WindowRule />
             {totals.data?.record && <p>{agent?.name} · all jobs<br />{totals.data.record.jobsTaken} taken · {totals.data.record.verified} verified · {totals.data.record.rejected} rejected</p>}
           </section></header>
-          {actions}
           {!quiet && <div className="work-split"><div>
             {!quiet && <ol className="work-timeline" aria-label="Earnings by job, newest first">
             {groupJobs(events).map(({ id, entries }, index) => {
@@ -79,6 +77,7 @@ function Earnings() {
           </aside></div>}
           <p className="muted">Verified is not paid. Release needs client approval, the release timer or an arbiter.</p>
         </>}
+      {actions}
     </section>
   </SpecialistPage>;
 }
