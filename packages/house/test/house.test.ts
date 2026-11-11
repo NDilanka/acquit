@@ -854,6 +854,50 @@ test("a change whose diff cannot be read is refused, never assumed clean", async
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("ordinary identifiers and placeholders are not credentials: an honest change is pushed and submitted", async () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-house-benign-"));
+	const canary = "CANARY-FIREWORKS-KEY";
+	try {
+		const pushes: string[] = [];
+		const change = [
+			"diff --git a/src/billing.ts b/src/billing.ts",
+			"+export function fw_calculateInvoiceTotal() { return 1; }",
+			"+export const handler = fw_getUserById;",
+			"+const table = fw_user_profile_settings;",
+			"+const rounding = fw_calculateInvoiceTotalWithTaxAndDiscountRounding;",
+			"+const builder = fw_v2ApiClientConfigBuilder;",
+			"+const short = \"fw_abc\";",
+			"+const label = \"fw_abcdefghijklmnopqrstuvwxyz\";",
+			" const placeholder = \"fw_your_api_key_here\";",
+			"",
+		].join("\n");
+		const git = changeGit({ status: 0, stdout: change }, pushes);
+		const { deps, commits } = fakeDeps(undefined, {
+			mode: houseMode({ FIREWORKS_API_KEY: canary }),
+			work: leakPort(root, git, { ...process.env, FIREWORKS_API_KEY: canary }),
+		});
+		assert.equal(await runHouseDelivery(deps, target), "SUBMITTED", "no identifier or placeholder stops an honest change");
+		assert.equal(pushes.length, 1, "the change is pushed");
+		assert.equal(commits.length, 1, "and submitted");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a configured key is refused by its exact value, even when it is too short to look like a key", async () => {
+	const root = mkdtempSync(join(tmpdir(), "acquit-house-exact-"));
+	const configured = "fw_shortkey";
+	try {
+		const pushes: string[] = [];
+		const git = changeGit({ status: 0, stdout: `diff --git a/src/config.ts b/src/config.ts\n+const key = "${configured}";\n` }, pushes);
+		const { deps, commits } = fakeDeps(undefined, {
+			mode: houseMode({ FIREWORKS_API_KEY: configured }),
+			work: leakPort(root, git, { ...process.env, FIREWORKS_API_KEY: configured }),
+		});
+		assert.equal(await runHouseDelivery(deps, target), "FAILED", "the configured value ends the series");
+		assert.deepEqual(pushes, [], "nothing reaches the work repo");
+		assert.deepEqual(commits, [], "nothing is submitted");
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("the work port keeps preparing when the state home is unwritable", { skip: process.platform === "win32" && "the state home is XDG on POSIX; win32 reads LOCALAPPDATA, which this test does not move" }, async () => {
 	// A hardened unit (ProtectHome) hides the home directory, so the CLI state root's default under
 	// the home fails with EACCES, exactly as the VM's House prepares did before its drop-in: the

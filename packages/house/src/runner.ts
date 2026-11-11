@@ -625,9 +625,17 @@ function boundedPatch(result: { status: number | null; stdout: string; stderr: s
 	return result.stdout.length > PATCH_CHARS_MAX ? `${result.stdout.slice(0, PATCH_CHARS_MAX)}\n... (truncated)` : result.stdout;
 }
 
-/** The shapes of the keys the House's providers issue. The agent can hold a key other than the one
- * configured, so a key-shaped string in the change is refused as well as a copy of a configured value. */
-const KEY_SHAPES: readonly RegExp[] = [/fw_[A-Za-z0-9_-]{16,}/, /sk-or-v1-[A-Za-z0-9]{16,}/];
+/** The shapes of the keys the House's providers issue, for a key the House does not hold: the agent can
+ * hold one other than the configured key. A Fireworks key is the `fw_` prefix and one token of at least 20
+ * letters and digits that has at least two digits and both cases, bounded by non-identifier characters. So a
+ * snake_case identifier, a placeholder, a short token, a camelCase name with fewer than two digits, or one
+ * with no digit at all never matches. A configured key is refused by its exact value (assertNoCredential),
+ * whatever its shape. The exact length and charset of a Fireworks key are not documented: this shape is a
+ * heuristic for keys the House does not hold, not a guarantee. */
+const KEY_SHAPES: readonly RegExp[] = [
+	/(?<![A-Za-z0-9_])fw_(?=(?:[A-Za-z0-9]*[0-9]){2})(?=[A-Za-z0-9]*[a-z])(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]{20,}(?![A-Za-z0-9_])/,
+	/sk-or-v1-[A-Za-z0-9]{16,}/,
+];
 
 /** The credential values this process holds: a copy of any of them in a change is a leak, whichever
  * provider the run used. Read in process, never logged. */
