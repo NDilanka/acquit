@@ -1,5 +1,6 @@
-// The PayPal check's read route over real HTTP: the job's client and the operator who bid read the check recorded for
-// it, a job nobody checked answers null, and any other caller (anonymous, or an operator who only sees the open job) is refused.
+// The PayPal check's read route over real HTTP: the job's client and the operators who bid, the House's bid included, read
+// the check recorded for it, a job nobody checked answers null, and any other caller (anonymous, or an operator who only
+// sees the open job) is refused.
 // The check row is written straight into the table the server creates at boot, since a check starts only on a push.
 
 import assert from "node:assert/strict";
@@ -54,11 +55,11 @@ const session = async (handle: string): Promise<string> => {
 };
 
 /** An operator row and its credits, written the way the core tests seed them. */
-function seedOperator(dbPath: string, handle: string) {
+function seedOperator(dbPath: string, handle: string, kind: "INDEPENDENT" | "HOUSE" = "INDEPENDENT") {
 	const db = new DatabaseSync(dbPath);
 	const now = instant(new Date().toISOString());
 	db.prepare("INSERT INTO operators VALUES (?, ?, ?, ?)").run(handle, 0, JSON.stringify({
-		id: handle, handle, kind: "INDEPENDENT", version: 0,
+		id: handle, handle, kind, version: 0,
 		payouts: { kind: "READY", merchant: "sandbox-seller", connectedAt: now } }), 0);
 	const granted = reduceCredits({ operator: handle, version: 0, balance: { allowance: 0, purchased: 0 }, lines: [] } as never,
 		{ kind: "Grant", week: creditWeek(now), paidReceipts: 0, at: now });
@@ -90,6 +91,7 @@ let child: ReturnType<typeof spawn> | null = null;
 let maya = "";
 let devon = "";
 let rival = "";
+let house = "";
 let checkedJob = "";
 let uncheckedJob = "";
 
@@ -98,12 +100,15 @@ before(async () => {
 	child = await bootServer(dbPath, dir);
 	seedOperator(dbPath, "devon-ops");
 	seedOperator(dbPath, "rival-ops");
+	seedOperator(dbPath, "house-tsfix", "HOUSE");
 	const principals = new DatabaseSync(dbPath);
 	principals.prepare("INSERT INTO principals VALUES (?, ?, ?)").run("rival-ops", "OPERATOR", null);
+	principals.prepare("INSERT INTO principals VALUES (?, ?, ?)").run("house-tsfix", "OPERATOR", null);
 	principals.close();
 	maya = await session("maya-client");
 	devon = await session("devon-ops");
 	rival = await session("rival-ops");
+	house = await session("house-tsfix");
 	checkedJob = await openJob(maya);
 	uncheckedJob = await openJob(maya);
 	const plugged = await post("/api/me/agents", { sample: "code-fixer" }, devon);
@@ -111,6 +116,12 @@ before(async () => {
 	const bid = await post("/api/commands", { key: crypto.randomUUID(),
 		command: { type: "PlaceBid", jobId: checkedJob, price: 40000, eta: 48, agent: "code-fixer-devon-ops", pitch: "test" } }, devon);
 	assert.equal(bid.status, 200, "the bid committed");
+	// The House bids through the same command, and its bid is projected under `bids.house`, not `bids.operators`.
+	const housePlugged = await post("/api/me/agents", { sample: "code-fixer" }, house);
+	assert.equal(housePlugged.status, 201);
+	const houseBid = await post("/api/commands", { key: crypto.randomUUID(),
+		command: { type: "PlaceBid", jobId: checkedJob, price: 40000, eta: 48, agent: "code-fixer-house-tsfix", pitch: "test" } }, house);
+	assert.equal(houseBid.status, 200, "the House's bid committed");
 	recordCheck(dbPath, checkedJob);
 });
 
@@ -132,6 +143,12 @@ test("the check route answers the recorded check to the job's owner and its bidd
 	const unchecked = await get(`/api/jobs/${uncheckedJob}/paypal-check`, maya);
 	assert.equal(unchecked.status, 200);
 	assert.deepEqual(await unchecked.json(), { check: null });
+});
+
+test("the check route answers the House's own bid on the job the same way it answers an independent bid", async () => {
+	const houseBidder = await get(`/api/jobs/${checkedJob}/paypal-check`, house);
+	assert.equal(houseBidder.status, 200, "the House operator is a bidder on the job");
+	assert.equal(((await houseBidder.json()) as { check: { orderId: string } }).check.orderId, ORDER);
 });
 
 test("the check route refuses an anonymous caller and an operator who neither owns nor bid on the job", async () => {

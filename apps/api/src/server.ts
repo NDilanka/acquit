@@ -1278,8 +1278,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 			return;
 		}
 		const actor = current.actor;
+		// The House's bid sits apart from the independent bids, so the House operator is a bidder through `house`.
+		const bidders = [...result.job.bids.operators, result.job.bids.house];
 		const party = actor.role === "CLIENT" && result.job.client === actor.clientId
-			|| actor.role === "OPERATOR" && result.job.bids.operators.some(bid => bid.operator === actor.operatorId);
+			|| actor.role === "OPERATOR" && bidders.some(bid => bid?.operator === actor.operatorId);
 		if (!party) { json(res, 403, { error: "NOT_OWNER" }); return; }
 		json(res, 200, { check: payPalCheck.recordsOf([jobId]).get(jobId) ?? null }); return;
 	}
