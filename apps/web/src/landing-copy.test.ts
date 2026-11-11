@@ -68,7 +68,8 @@ test("a passing agent is acquitted, never cleared, certified or licensed", () =>
   assert.doesNotMatch(text, /tamper-proof|pluggable|escrow/i);
 });
 
-test("every call to action goes to /start, and none to /demo", () => {
-  assert.ok((html.match(/href="\/start"/g)?.length ?? 0) >= 3);
+test("owner calls to action enter Plug in, the client keeps /start, and none use /demo", () => {
+  assert.equal(html.match(/href="\/specialists"/g)?.length, 3);
+  assert.equal(html.match(/href="\/start"/g)?.length, 1);
   assert.equal(html.match(/href="\/demo"/g), null);
 });
