@@ -55,32 +55,65 @@ export function reasonWords(code: string): string {
 }
 
 /**
+ * The words a verdict counts its two tallies in. A code job counts tests; a laser-cut job counts the checker's
+ * public rules and the sealed checks the agent never receives.
+ */
+export type VerdictWords = { readonly frozen: string; readonly hidden: string };
+export const CODE_WORDS: VerdictWords = { frozen: "visible tests", hidden: "hidden tests" };
+export const LASER_WORDS: VerdictWords = { frozen: "public rules", hidden: "sealed checks" };
+
+/**
  * The count sentences for a run that reached its tests. Null when either tally is missing, so the
  * reasons speak instead. Shared by the receipt line and the job timeline.
  */
-export function tallyWords(frozen: TestTally | null, hidden: TestTally | null): string | null {
+export function tallyWords(frozen: TestTally | null, hidden: TestTally | null, words: VerdictWords = CODE_WORDS): string | null {
   if (frozen === null || hidden === null) return null;
   const visible = frozen.passed === frozen.expected
-    ? `Passed all ${frozen.expected} visible tests.`
-    : `Passed ${frozen.passed} of ${frozen.expected} visible tests.`;
+    ? `Passed all ${frozen.expected} ${words.frozen}.`
+    : `Passed ${frozen.passed} of ${frozen.expected} ${words.frozen}.`;
   const hiddenPart = hidden.passed === hidden.expected
-    ? `Passed all ${hidden.expected} hidden tests.`
-    : `Failed ${hidden.expected - hidden.passed} of ${hidden.expected} hidden tests.`;
+    ? `Passed all ${hidden.expected} ${words.hidden}.`
+    : `Failed ${hidden.expected - hidden.passed} of ${hidden.expected} ${words.hidden}.`;
   return `${visible} ${hiddenPart}`;
 }
 
 /** One attempt, in the order it was judged: the verdict, the tallies it passed or the reasons it failed. */
-export function attemptLine(attempt: PublicAttempt, total: number): string {
+export function attemptLine(attempt: PublicAttempt, total: number, words: VerdictWords = CODE_WORDS): string {
   const head = `Attempt ${attempt.ordinal} of ${total}`;
   if (attempt.result === "VERIFIED") {
-    const frozen = attempt.frozen ? `Visible tests ${attempt.frozen.passed} of ${attempt.frozen.expected}` : null;
-    const hidden = attempt.hidden ? `hidden tests ${attempt.hidden.passed} of ${attempt.hidden.expected}` : null;
+    const frozen = attempt.frozen ? `${sentenceCase(words.frozen)} ${attempt.frozen.passed} of ${attempt.frozen.expected}` : null;
+    const hidden = attempt.hidden ? `${words.hidden} ${attempt.hidden.passed} of ${attempt.hidden.expected}` : null;
     return `${head}: verified. ${[frozen, hidden].filter((part): part is string => part !== null).join(", ")}.`;
   }
-  const counts = tallyWords(attempt.frozen, attempt.hidden);
+  const counts = tallyWords(attempt.frozen, attempt.hidden, words);
   if (counts !== null) return `${head}: rejected. ${counts}`;
   const reasons = attempt.reasons.map(reasonWords);
   return `${head}: rejected. ${reasons.length > 0 ? reasons.join("; ") : "No reason recorded"}.`;
+}
+
+function sentenceCase(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * A laser-cut job publishes no pull request: its judged commit is the delivered file, so the verdict's pullRequest
+ * is null (packages/core/src/verifier.ts, the physical verdict). Every code job's receipt names one. Laser-cut is the
+ * only physical workflow, and public receipts come only from paid jobs.
+ */
+export function isLaserReceipt(receipt: PublicReceipt): boolean {
+  return receipt.verdict.pullRequest === null;
+}
+
+/**
+ * The laser-cut workflow a receipt names, and the one file the agent delivers. The browser cannot import
+ * LASER_CUT_WORKFLOW from packages/core/src/physical.ts (it reads files), so these mirror its title and deliveryPath.
+ */
+export const LASER_WORKFLOW_NAME = "Laser cut";
+export const LASER_DELIVERY_PATH = "delivery/part.svg";
+
+/** The verdict block of a laser-cut receipt: the public rules the checker reports, the sealed checks, and the attempts used. */
+export function laserVerdictLine(verdict: PublicReceipt["verdict"]): string {
+  return `Public rules ${verdict.frozen.passed} of ${verdict.frozen.expected}. Sealed checks ${verdict.hidden.passed} of ${verdict.hidden.expected}. Attempts used ${verdict.attemptsUsed} of ${verdict.attemptsAllowed}.`;
 }
 
 /** The headline a seller reads first: the outcome, the amount, the operator, and when it settled. */

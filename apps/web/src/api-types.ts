@@ -267,7 +267,7 @@ export type PublicReceiptResponse = {
     readonly money: { readonly heldCents: UsdCents | null; readonly paidCents: UsdCents; readonly feeCents: UsdCents | null;
       readonly processorFeeCents: UsdCents | null; readonly acquitFeeCents: UsdCents | null };
     readonly verdict: { readonly attemptsUsed: number; readonly attemptsAllowed: number; readonly frozen: { readonly expected: number; readonly passed: number };
-      readonly hidden: { readonly expected: number; readonly passed: number }; readonly pullRequest: number; readonly mergeCommit: string;
+      readonly hidden: { readonly expected: number; readonly passed: number }; readonly pullRequest: number | null; readonly mergeCommit: string;
       readonly history: readonly PublicAttempt[] };
     readonly paypal: { readonly captureId: string | null; readonly payoutItemId: string | null; readonly feeBatchId: string | null };
     readonly hiddenCases: { readonly committedDigest: string; readonly committedAt: Instant | null;

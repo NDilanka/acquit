@@ -5,6 +5,11 @@ import type { PublicAttempt } from "./api-types.ts";
 import {
   attemptLine,
   digestVerdict,
+  isLaserReceipt,
+  laserVerdictLine,
+  LASER_DELIVERY_PATH,
+  LASER_WORDS,
+  LASER_WORKFLOW_NAME,
   moneyLines,
   operatorLine,
   outcomeLine,
@@ -190,4 +195,49 @@ test("every receipt carries the sandbox note, so no PayPal figure reads as real 
 
 test("a scripted receipt names its agent with the same Simulated label the judge tour shows", () => {
   assert.equal(SCRIPTED_NOTE.startsWith("Scripted agent (Simulated)"), true);
+});
+
+const LASER_VERDICT: PublicReceipt["verdict"] = { attemptsUsed: 1, attemptsAllowed: 3, frozen: { expected: 13, passed: 13 },
+  hidden: { expected: 7, passed: 7 }, pullRequest: null, mergeCommit: "b".repeat(40), history: [] };
+
+test("a receipt with no pull request is a laser-cut receipt, and a code job's receipt is not", () => {
+  assert.equal(isLaserReceipt(receipt({ verdict: LASER_VERDICT })), true);
+  assert.equal(isLaserReceipt(receipt()), false);
+});
+
+test("a laser-cut verdict counts public rules and sealed checks, and the attempts used", () => {
+  assert.equal(laserVerdictLine(LASER_VERDICT), "Public rules 13 of 13. Sealed checks 7 of 7. Attempts used 1 of 3.");
+  assert.equal(laserVerdictLine({ ...LASER_VERDICT, attemptsUsed: 2, frozen: { expected: 13, passed: 11 }, hidden: { expected: 7, passed: 6 } }),
+    "Public rules 11 of 13. Sealed checks 6 of 7. Attempts used 2 of 3.");
+});
+
+test("a laser-cut attempt names its public rules and sealed checks, never visible or hidden tests", () => {
+  const verified: PublicAttempt = { ordinal: 1, result: "VERIFIED", at: RELEASED, frozen: { expected: 13, passed: 13 },
+    hidden: { expected: 7, passed: 7 }, reasons: [] };
+  assert.equal(attemptLine(verified, 3, LASER_WORDS), "Attempt 1 of 3: verified. Public rules 13 of 13, sealed checks 7 of 7.");
+  const rejected: PublicAttempt = { ...verified, result: "REJECTED", frozen: { expected: 13, passed: 12 }, reasons: ["TESTS_FAILED:frozen"] };
+  assert.equal(attemptLine(rejected, 3, LASER_WORDS), "Attempt 1 of 3: rejected. Passed 12 of 13 public rules. Passed all 7 sealed checks.");
+  assert.equal(tallyWords({ expected: 13, passed: 13 }, { expected: 7, passed: 5 }, LASER_WORDS),
+    "Passed all 13 public rules. Failed 2 of 7 sealed checks.");
+});
+
+test("the laser-cut receipt names its workflow and delivered file, and drops the code verifier's score card and pull request", () => {
+  assert.equal(LASER_WORKFLOW_NAME, "Laser cut");
+  assert.equal(LASER_DELIVERY_PATH, "delivery/part.svg");
+  const page = readFileSync(new URL("./pages/PublicReceipt.tsx", import.meta.url), "utf8");
+  assert.match(page, /const laser = isLaserReceipt\(r\);/);
+  assert.match(page, /\{laser \? \(\s*<>\s*<p>\{laserVerdictLine\(r\.verdict\)\}<\/p>/);
+  assert.match(page, /Workflow: \{LASER_WORKFLOW_NAME\}\. Delivered file: <span className="mono">\{LASER_DELIVERY_PATH\}<\/span>\./);
+  assert.match(page, /Delivered commit <IdChip value=\{r\.verdict\.mergeCommit\} \/>/);
+  assert.match(page, /\{!laser && \(\s*<section className="card pad">\s*<h2>Verifier score card<\/h2>/);
+  assert.match(page, /<h2>Sealed checks<\/h2>/);
+});
+
+test("a code job's receipt keeps its visible and hidden test wording, pull request, hidden cases, and score card", () => {
+  const page = readFileSync(new URL("./pages/PublicReceipt.tsx", import.meta.url), "utf8");
+  assert.match(page, /Visible tests \{r\.verdict\.frozen\.passed\} of \{r\.verdict\.frozen\.expected\}, hidden tests \{r\.verdict\.hidden\.passed\} of\{" "\}/);
+  assert.match(page, /Pull request #\{r\.verdict\.pullRequest\}, checked tree <IdChip value=\{r\.verdict\.mergeCommit\} \/>/);
+  assert.match(page, /<h2>Hidden cases<\/h2>/);
+  assert.match(page, /<h2>Verifier score card<\/h2>/);
+  assert.match(page, /\{attemptLine\(attempt, r\.verdict\.attemptsAllowed\)\}/);
 });
