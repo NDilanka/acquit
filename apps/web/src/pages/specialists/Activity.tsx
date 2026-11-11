@@ -7,7 +7,7 @@ import { SpecialistPage } from "./SpecialistPage.tsx";
 import { useLoad } from "./useLoad.ts";
 import { useReport } from "./useReport.ts";
 import { EventMark, JobStrip, TimelineMark, WorkSkeleton, WorkTime } from "./WorkTimeline.tsx";
-import { agentDelta, jobLanes, reportActivitySummary, reportEvents, type WorkLane } from "./work.ts";
+import { agentDelta, jobLanes, reportActivitySummary, reportEvents, reportReleasePending, type WorkLane } from "./work.ts";
 import type { SpecialistAgent } from "./types.ts";
 import { ActivityFeed } from "./ActivityFeed.tsx";
 import { activitySummary } from "./liveWork.ts";
@@ -77,14 +77,15 @@ function LegacyActivity() {
         : <div className="work-split"><ol className="work-timeline" aria-label="Activity, newest first">
           <TimelineMark title={active ? "Watching for work within your orders" : "Autopilot off"}>
             <p className="work-status">{events.length ? "Latest recorded events below." : "No work recorded. Check your orders or explore the example."}</p></TimelineMark>
-          {events.map((event, i) => <EventMark key={event.id} event={event} index={i + 1} />)}
+          {events.map((event, i) => <EventMark key={event.id} event={event} index={i + 1}
+            releasePending={reportReleasePending(event.jobId, report.data!)} />)}
         </ol><aside className="work-side" aria-label="Activity summary">
           <section className="runner-status"><h2>Standing orders</h2><p>{active ? "Autopilot on" : "Autopilot off"}</p>
             <p className="muted">Bids follow your saved limits.</p></section>
           {!!events.length && <JobStrip lanes={jobLanes(events)} through={readAt} />}
           <dl className="work-facts"><div><dt>Since <WorkTime at={report.data.since} full /></dt>
             <dd>{countWords(jobs.size,"job")} · {countWords(events.filter((event) => event.kind === "bid").length,"bid")} recorded</dd></div></dl>
-          <p className="muted">Held money is workspace-wide. Verified is not paid.</p>
+          <p className="muted">Held money is workspace-wide.</p>
         </aside></div>}
       {agent?.task === "code" && <Link className="work-replay-link" to={`/specialists/activity${suffix}?replay=1`}>View an example run</Link>}
       <div className="owner-actions">{report.error

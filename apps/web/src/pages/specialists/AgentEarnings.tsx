@@ -7,7 +7,7 @@ import { SpecialistPage } from "./SpecialistPage.tsx";
 import { useReport } from "./useReport.ts";
 import { countWords, dollars, paidTotalCents } from "./view.ts";
 import { JobStrip, TimelineMark, WorkSkeleton, WorkTime } from "./WorkTimeline.tsx";
-import { agentDelta, earningsEvents, groupJobs, jobFacts, jobLabel, jobLanes, type WorkEvent } from "./work.ts";
+import { agentDelta, earningsEvents, groupJobs, jobFacts, jobLabel, jobLanes, reportReleasePending, type WorkEvent } from "./work.ts";
 import { MONEY_FLOW_WORDS, releasedWorkHref } from "./liveWork.ts";
 import { EarningsHeadingSkeleton } from "./OwnerLoading.tsx";
 import { REPORT_WINDOW_RULE } from "./reportWindow.ts";
@@ -84,6 +84,8 @@ function Earnings() {
                     <span className="earnings-job-id">{jobLabel(latest.jobId)}</span></> : "Workspace activity"}>
                   <p className="work-status">{latest.kind === "released" && latest.jobId
                     ? <Link to={releasedWorkHref(latest.jobId,activity.data?.activity)}>{latest.status} · PayPal sandbox</Link> : latest.status}</p>
+                  {latest.kind === "verified" && reportReleasePending(latest.jobId,data,activity.data?.activity) &&
+                    <p className="muted">Verified is not paid. Release needs client approval, the release timer or an arbiter.</p>}
                   <EarlierEarnings entries={entries.slice(1)} />
                 </TimelineMark>;
               })}
@@ -110,7 +112,6 @@ function Earnings() {
             {totals.error !== null && <p className="muted">Agent totals did not load. <button className="text-button" onClick={totals.reload}>Retry totals</button></p>}
           </aside></div>}
           {!!data.payouts.length && <p className="work-money-flow">{MONEY_FLOW_WORDS}</p>}
-          <p className="muted">Verified is not paid. Release needs client approval, the release timer or an arbiter.</p>
         </>}
       {actions}
     </section>

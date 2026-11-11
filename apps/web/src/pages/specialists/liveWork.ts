@@ -29,6 +29,10 @@ export function activityStateWords(state: string): string {
   return Object.hasOwn(STATES,state) ? STATES[state as ActivityState] : "The current job state is unavailable.";
 }
 
+export function activityReleasePending(job: Pick<ActivityJob, "state" | "release">): boolean {
+  return !job.release && ["AWAITING_APPROVAL", "DISPUTED", "RELEASING"].includes(job.state);
+}
+
 /** The selected agent's newest stored job drives the headline, not the autopilot switch. */
 export function activitySummary(feed: OwnerActivity | undefined, active: boolean, agentId?: string): ActivityHeadline & { detail: string } {
   if (!feed) return { heading:"Loading activity.",detail:"Reading your jobs and runner state.",earnings:false };
