@@ -1473,7 +1473,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		// Only the rows that name this operator are read and parsed; the activity filter then picks the exact set.
 		const rows = jobRowsNaming(db, current.actor.operatorId);
 		const runner = visitor === null ? null : sampleRunner.statusOf(visitor);
-		json(res, 200, activityJson({ operatorId: current.actor.operatorId, limit, rows, sampleJobs: sampleRunJobs(db, current.actor.operatorId), enabled: sampleRunnerEnabled, runner }));
+		json(res, 200, activityJson({ operatorId: current.actor.operatorId, limit, rows, sampleJobs: sampleRunJobs(db, current.actor.operatorId), enabled: sampleRunnerEnabled, runner,
+			paypalChecks: payPalCheck.recordsOf(rows.map(row => row.id)) }));
 		return;
 	}
 	const tokenMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/work-repo-token$/);
