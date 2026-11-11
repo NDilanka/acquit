@@ -1,42 +1,44 @@
-// The page's words about the second check, in one place so the tests can hold them to what the page really does.
+// The page's words about the second check, in one place so the tests can hold them to what is true.
 // This demonstration runs every check in the visitor's browser, the second check and its expected points included, so
-// nothing here may claim that check is secret from the visitor. Only on a real job is it kept from the agent.
+// nothing here may claim that check is secret from the visitor. Laser jobs are not paid work on Acquit yet and no server
+// runs the laser checker, so nothing here may claim a laser check runs on the server either. Only code jobs run hidden
+// tests on the server.
 
-/** The check the agent never sees, by count. */
+/** The heading for the checks the public rules do not cover, by count. */
 export function unseenName(count: number): string {
-  return count === 1 ? "The check the agent never sees" : "The checks the agent never sees";
+  return count === 1 ? "The second check" : "The other checks";
 }
 
 export const DEMO_LINE = "Shown here for the demonstration";
 
 export const DEMO_INTRO =
-  "This page is a demonstration: the public rules and the check the agent never sees both run in your browser, so you can watch them. On a real job that check runs on Acquit's server and the agent never receives it.";
+  "This page is a demonstration. Both checks run in your browser so you can watch them. Laser jobs are not paid work on Acquit yet. On code jobs, which are, the hidden tests run on Acquit's server and the agent never receives them.";
 
 export const HONEST_LINE = "The file is checked by the real checker, running in your browser. The machine run is simulated, and nothing on this page moves money.";
 
 export const MOMENT = {
-  main: "Every public rule passed. The check the agent never sees did not.",
-  sub: "Shown here for the demonstration. On a real job this check runs on Acquit's server, and the agent never receives it.",
+  main: "Every public rule passed. The second check did not.",
+  sub: "Shown here for the demonstration. On paid code jobs, hidden tests like this run on Acquit's server, and the agent never receives them.",
 } as const;
 
 export const VERDICT_LINE = {
-  pass: "On a real job: passed, payment could be released.",
-  fail: "On a real job: rejected, no payment.",
+  pass: "This file would pass.",
+  fail: "This file would be rejected. No payment would be released.",
 } as const;
 
 export function unseenRunning(): string {
-  return "Running the check the agent never sees.";
+  return "Running the second check.";
 }
 
 export function unseenNext(): string {
-  return "Every public rule passed. Now the check the agent never sees.";
+  return "Every public rule passed. Now the second check.";
 }
 
-/** The verdict's detail line when only the unseen checks decided it, or when everything passed. */
+/** The verdict's detail line when only the second checks decided it, or when everything passed. */
 export function verdictDetail(publicCount: number, unseenCount: number, unseenFailed: number, pass: boolean): string {
   if (pass) {
     if (unseenCount === 0) return `All ${publicCount} public rules passed.`;
-    return `All ${publicCount} public rules passed, and ${unseenCount === 1 ? "so did the check the agent never sees" : `so did all ${unseenCount} checks the agent never sees`}.`;
+    return `All ${publicCount} public rules passed, and ${unseenCount === 1 ? "so did the second check" : `so did all ${unseenCount} other checks`}.`;
   }
-  return `Every public rule passed, and ${unseenFailed === 1 ? "the check the agent never sees" : `${unseenFailed} checks the agent never sees`} failed.`;
+  return `Every public rule passed, and ${unseenFailed === 1 ? "the second check" : `${unseenFailed} other checks`} failed.`;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api";
 import { Link, useRouter } from "../../router";
 import { ErrorNote, SkeletonCard, Spinner } from "../../ui";
@@ -32,6 +32,7 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   const [recordLoading, setRecordLoading] = useState(true);
   const [recordError, setRecordError] = useState<unknown>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
+  const actionWrap = useRef<HTMLSpanElement>(null);
   useEffect(() => {
     if (!available) { setRecordLoading(false); return; }
     let cancelled = false;
@@ -73,6 +74,12 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   const date = exam?.endedAt ?? null;
   const pass = exam?.status === "PASSED";
   useEffect(() => { announce(!available ? "Exam coming." : recordLoading ? "Loading exam record." : recordError ? "Exam record unavailable." : exam ? `Exam ${exam.status.toLowerCase()}.` : "Ready to take the exam."); }, [available, recordLoading, recordError, exam?.status, announce]);
+  // A passed exam hands the keyboard straight to the next step, unless the owner is focused elsewhere.
+  useEffect(() => {
+    if (!pass || !agent.acquitted) return;
+    const active = document.activeElement;
+    if (active === null || active === document.body || active.tagName === "H1") actionWrap.current?.querySelector("a")?.focus();
+  }, [pass, agent.acquitted]);
   const recordPath = `/specialists/exam/${encodeURIComponent(agent.id)}${exam ? `?exam=${encodeURIComponent(exam.id)}` : ""}`;
   if (!available) return <section className="exam-before"><h1>Exam coming</h1>
     <p>Use Code fixer to try the built exam.</p>
@@ -81,11 +88,11 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
   if (recordLoading) return <section className="exam-record exam-loading" aria-busy="true"><h1>Reading the exam record</h1><SkeletonCard lines={5} /></section>;
   if (recordError !== null) return <section><h1>Exam record unavailable</h1><LoadFailed error={recordError} onRetry={() => setReadTick((n) => n + 1)} primary /></section>;
   if (!exam && agent.acquitted) return <section className="exam-empty"><h1>No stored exam record</h1>
-    <p>This agent is Acquitted, but no stored exam run is available. Sample data is not its exam record.</p>
+    <p>Acquitted, but no stored exam is available. An example is not this agent’s record.</p>
     <div className="owner-actions"><Link to={`/specialists/orders/${encodeURIComponent(agent.id)}`} className="btn">Set standing orders</Link></div></section>;
   if (!exam) return <section className="exam-before"><h1>Take the exam</h1><p>Pass to bid on code jobs.</p>
-    {sample && <details className="exam-sample"><summary>Example of a passed exam · sample data · Simulated</summary>
-      <div className="sample-proof"><p>Example only, not your agent’s record.</p>
+    {sample && <details className="exam-sample"><summary>Example passed exam · Simulated</summary>
+      <div className="sample-proof"><p>Not your agent’s record.</p>
         <CheckCells counts={{ total: sample.visible.length, passed: sample.visible.filter(Boolean).length }} total={sample.visible.length} hidden={false} />
         <CheckCells counts={{ total: sample.hidden.length, passed: sample.hidden.filter(Boolean).length }} total={sample.hidden.length} hidden />
       </div>
@@ -93,7 +100,7 @@ function ExamForAgent({ agent }: { agent: SpecialistAgent }) {
     {error !== null && <ErrorNote error={error} />}
     <div className="owner-actions"><button type="button" className="btn" disabled={starting || block !== null} onClick={() => void start()}>{starting ? "Starting…" : "Take the exam"}</button></div>
     {block && <p>{block}</p>}</section>;
-  const action = pass && agent.acquitted ? <Link to={`/specialists/orders/${encodeURIComponent(agent.id)}`} className="btn">Set standing orders</Link>
+  const action = pass && agent.acquitted ? <span ref={actionWrap}><Link to={`/specialists/orders/${encodeURIComponent(agent.id)}`} className="btn">Set standing orders</Link></span>
     : <button className="btn" type="button" disabled={starting || open || block !== null} onClick={() => void start()}>
       {starting && <Spinner />}{open ? "Running the exam" : starting ? "Starting…" : status === "FAILED" || status === "ERROR" ? "Retry the exam" : "Take the exam"}
     </button>;

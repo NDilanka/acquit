@@ -3,7 +3,7 @@
 .checking-split > section { display: grid; gap: var(--space-4); align-content: start; }
 .checking-page h2 { font-size: var(--text-section); line-height: var(--leading-section); }
 .checking-page :is(p,summary) { font-size: var(--text-ui); line-height: var(--leading-ui); }
-.checking-label { color: var(--green-text); font-weight: 500; }
+.checking-label { color: var(--muted); font-weight: 500; }
 .checking-fold summary { display: flex; align-items: center; min-height: var(--control-lg); cursor: pointer; text-decoration: underline; text-underline-offset: 4px; }
 .checking-fold > :not(summary) { margin-top: var(--space-4); }
 .checking-fold .card { background: var(--panel); padding: var(--space-6); border: 1px solid var(--line); border-radius: var(--r-sm); }

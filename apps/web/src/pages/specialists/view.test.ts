@@ -5,6 +5,7 @@ import {
   DEFAULT_FORM,
   STEPS,
   acquittedWords,
+  countWords,
   autopilotCopy,
   examStartWords,
   examStatusWords,
@@ -39,6 +40,18 @@ import {
   provenanceWords,
 } from "./view.ts";
 import type { StandingOrders } from "./types.ts";
+
+describe("counted copy", () => {
+  it("uses singular nouns for one and plural nouns for zero or several", () => {
+    for (const noun of ["bid","job","agent","earlier event","earlier example event"]) {
+      assert.equal(countWords(0,noun),`0 ${noun}s`);
+      assert.equal(countWords(1,noun),`1 ${noun}`);
+      assert.equal(countWords(2,noun),`2 ${noun}s`);
+    }
+    // Verified and rejected are adjectives: both remain unchanged with every count.
+    for (const n of [0,1,2]) assert.equal(recordWords({jobsTaken:n,verified:n,rejected:n}),`${n} taken, ${n} verified, ${n} rejected`);
+  });
+});
 
 describe("agent picking and the initial report window", () => {
   it("requires an explicit choice for several agents and never substitutes for a missing id", () => {

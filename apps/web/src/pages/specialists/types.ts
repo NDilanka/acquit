@@ -153,6 +153,7 @@ export type ActivityJob = {
   readonly label: string | null;
   readonly agentId: string;
   readonly state: ActivityState;
+  readonly closedReason?: string | null;
   readonly updatedAt: string;
   readonly bid: { readonly id: string; readonly priceCents: number; readonly placedAt: string } | null;
   readonly moneyHeld: { readonly heldCents: number; readonly heldAt: string } | null;
@@ -172,7 +173,8 @@ export type OwnerActivity = {
   readonly runner: {
     readonly enabled: boolean;
     readonly status: "OFF" | "IDLE" | "QUEUED" | "RUNNING" | "REFUSED";
-    readonly reason: "WAITING_FOR_FREE_RUNNER" | "NO_FORK" | "DAILY_LIMIT" | "NO_ACQUITTAL" | "NO_STANDING_ORDERS" | null;
+    /** Known reasons are rendered explicitly; future reasons keep a neutral fallback. */
+    readonly reason: string | null;
     readonly queuedSince: string | null;
     readonly runsToday: number; readonly runsPerDay: number;
   };
@@ -193,5 +195,5 @@ export type SpecialistsApi = {
   floor(): Promise<readonly FloorEntry[]>;
   morningReport(since: string): Promise<MorningReport>;
   /** Null only for 404 on deployments that do not yet serve the activity contract. */
-  activity(limit?: number): Promise<OwnerActivity | null>;
+  activity(limit?: number, principal?: string): Promise<OwnerActivity | null>;
 };

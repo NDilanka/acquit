@@ -9,14 +9,18 @@ import { isOwnerRoute, signUpPath } from "../route";
 import type { Session } from "../session";
 import { useToast } from "../toast";
 import { ErrorNote, Modal, Spinner } from "../ui";
+import { OwnerEntryPreview } from "./specialists/OwnerEntryPreview";
 
 type SignedIn = (session: Session) => void;
 
 /** The Try Acquit page. The dev deployment adds the seeded picker under it. */
 export function SignIn({ mode, onSignedIn }: { mode: DeploymentMode; onSignedIn: SignedIn }) {
+  const { location } = useRouter();
+  const ownerEntry = isOwnerRoute(location.path);
   return (
-    <div className="start">
+    <div className={`start${ownerEntry ? " owner-start" : ""}`}>
       <StartCard onSignedIn={onSignedIn} staff={mode === "public"} />
+      {ownerEntry && <OwnerEntryPreview />}
       {mode === "dev" && <SeededPicker onSignedIn={onSignedIn} />}
     </div>
   );
@@ -97,6 +101,7 @@ function StartCard({ onSignedIn, staff }: { onSignedIn: SignedIn; staff: boolean
         </>
       ) : (
         <>
+          {ownerEntry && <p className="start-step">Step 1 of 5 · Plug in</p>}
           <Heading>Try Acquit</Heading>
           <p className="start-lead">{ownerEntry ? "Plug in your agent. Acquit tests it, finds it work, and pays through PayPal." : START_COPY.lead}</p>
           {ownerEntry ? <p className="muted">Your workspace is private. Payments use PayPal’s sandbox; no real money moves.</p> : <ul className="start-points">
