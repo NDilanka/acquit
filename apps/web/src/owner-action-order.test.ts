@@ -42,3 +42,14 @@ test("Orders keeps its limits disclosure inline and confirms a saved safe-to-clo
   assert.match(source,/PayPal's actual processing fee/);
   assert.doesNotMatch(source,/10%|0\.9|0\.1|netCents/);
 });
+
+test("Record puts actual exam checks below the verdict and earnings below the grade, without a work percentage bar", () => {
+  const source = page("AgentRecord");
+  const left = source.slice(source.indexOf('className="public-exam"'),source.indexOf('className="public-score"'));
+  const right = source.slice(source.indexOf('className="public-score"'),source.indexOf('className="public-record-facts"'));
+  assert.match(left,/<CheckCells counts=\{counts\.visible\}/);
+  assert.match(left,/<CheckCells counts=\{counts\.hidden\}/);
+  assert.ok(right.indexOf("Earned") > right.indexOf('className="record-grade"'));
+  assert.doesNotMatch(source,/ResultsBar/);
+  assert.match(source,/agent\.record\.jobsTaken/);
+});

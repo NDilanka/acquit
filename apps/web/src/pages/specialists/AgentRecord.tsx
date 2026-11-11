@@ -7,7 +7,6 @@ import { CheckCells, Seal } from "./ExamRecord.tsx";
 import { useOwner } from "./OwnerPanel.tsx";
 import { agentTaskLabel } from "./ownerState.ts";
 import { RecordSkeleton } from "./OwnerLoading.tsx";
-import { ResultsBar } from "./ResultsBar.tsx";
 import { recordCounts, recordExamId } from "./recordChecks.ts";
 import { useLoad } from "./useLoad.ts";
 import { dollars } from "./view.ts";
@@ -52,18 +51,18 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
   return <section className="public-owner-page public-record">
     <header className="work-heading"><h1>{agent.name}</h1><p className="spec-lead">{agentTaskLabel(agent.task)}{agent.ownerHandle && <> · owned by {agent.ownerHandle}</>}</p></header>
     <div className="public-record-split"><section className="public-proof" aria-label="Acquittal record">
-      <div className="public-verdict"><Seal passed={acquitted} /><div><p className="record-key">{acquitted ? "Acquitted" : agent.task !== "code" ? "Exam coming" : "Not acquitted"}</p>
+      <div className="public-exam"><div className="public-verdict"><Seal passed={acquitted} /><div><p className="record-key">{acquitted ? "Acquitted" : agent.task !== "code" ? "Exam coming" : "Not acquitted"}</p>
         <p className="muted">{agent.seeded ? <b>Seeded</b> : agent.simulated ? <b>Simulated</b> : null}{agent.acquittedAt && <>{(agent.seeded || agent.simulated) && " · "}<WorkTime at={agent.acquittedAt} full /></>}</p></div></div>
-      <div className="public-score"><div><p className="muted record-grade-label">{agent.grade === null ? "No grade yet" : "Grade"}</p><p className="record-grade">{agent.grade ?? "—"}</p></div>
       {(agent.seeded || counts?.visible || counts?.hidden) && <div className="public-checks">{agent.seeded
         ? <p><b>Exam not sat</b> · placed by Acquit</p> : <>
           {counts?.visible && <CheckCells counts={counts.visible} total={counts.visible.total} hidden={false} />}
           {counts?.hidden && <CheckCells counts={counts.hidden} total={counts.hidden.total} hidden />}
         </>}</div>}</div>
+      <div className="public-score"><div><p className="muted record-grade-label">{agent.grade === null ? "No grade yet" : "Grade"}</p><p className="record-grade">{agent.grade ?? "—"}</p></div>
+        {agent.earnedCents !== undefined && <p>Earned <b>{dollars(agent.earnedCents)} released</b> · PayPal sandbox</p>}
+      </div>
     </section><aside className="public-record-facts">
-      {agent.record && <div><ResultsBar verified={agent.record.verified} rejected={agent.record.rejected} />
-        <p className="muted">{agent.record.jobsTaken} taken · {agent.record.verified} verified · {agent.record.rejected} rejected</p></div>}
-      {agent.earnedCents !== undefined && <p>Earned <b>{dollars(agent.earnedCents)} released</b> · PayPal sandbox</p>}
+      {agent.record && <p className="muted">{agent.record.jobsTaken} taken · {agent.record.verified} verified · {agent.record.rejected} rejected</p>}
       <CopyRecordPath path={path} />
     </aside></div>
     <details className="record-meaning"><summary>What does Acquitted mean?</summary><p>Qualified for this task. Seeded agents did not sit an exam. Simulated exams use example checks. Payment needs client approval, the release timer or an arbiter.</p></details>
