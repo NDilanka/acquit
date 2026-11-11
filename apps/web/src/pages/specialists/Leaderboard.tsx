@@ -45,7 +45,7 @@ export function LeaderboardPage() {
         {rows.mine && <div className="board-mine" aria-label="Your pinned agent"><Board rows={[rows.mine]} ownedIds={[rows.mine.entry.agentId]} caption="Your pinned agent" /></div>}
         <section className="board-house" aria-label="House agent">
           <Link to={`/agents/${HOUSE_AGENT_ID}/record`}>House</Link>
-          {houseEntry ? <p className="muted">{rows.house ? `Rank ${rows.house.rank}` : "Not ranked"} · {houseEntry.record.verified} verified · {houseEntry.record.rejected} rejected · {houseEntry.earnedCents ? `${dollars(houseEntry.earnedCents)} released` : "Nothing released yet"}</p>
+          {houseEntry ? <p className="muted">{rows.house ? `Rank ${rows.house.rank}` : "House agent"} · {houseEntry.record.verified} verified · {houseEntry.record.rejected} rejected · {houseEntry.earnedCents ? `${dollars(houseEntry.earnedCents)} released` : "Nothing released yet"}</p>
             : house.error ? <p className="muted">House record did not load. <button className="text-button" onClick={house.reload}>Retry House record</button></p>
             : <p className="muted" aria-busy="true">Reading the House record.</p>}
         </section>
