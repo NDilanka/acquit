@@ -205,7 +205,7 @@ export function PublicReceiptPage({ receiptId, signedIn }: { receiptId: string; 
       {ids.length > 0 && (
         <section className="card pad money">
           <h2>PayPal ids</h2>
-          <div className={laser ? "rows laser-receipt-ids" : "rows"}>
+          <div className={laser ? "rows laser-receipt-ids" : "rows code-receipt-ids"}>
             {ids.map((line) => (
               <div key={line.label}>
                 <span>

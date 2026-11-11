@@ -68,9 +68,9 @@ test("compact viewing wraps 240px tiles by canvas width, including when Ask narr
   assert.match(studio,/\.studio-host \.ag-studio-root-canvas \{ container: studio-canvas \/ inline-size; \}/);
   assert.match(studio,/@container studio-canvas \(max-width: 860px\)/);
   assert.match(studio,/\.studio-flow \.ag-studio-layout-canvas \{ height: auto !important; min-height: 0 !important; \}/);
-  assert.match(studio,/\.studio-flow \.ag-studio-layout-content-container:has\(> \.ag-studio-layout-widget\) \{ position: relative; inset: auto; display: grid; grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 240px\), 1fr\)\); \}/);
-  assert.match(studio,/\.studio-flow \.ag-studio-layout-widget \{ position: static; width: auto !important; min-width: 0; min-height: 160px; \}/);
-  assert.match(studio,/\.studio-flow \.ag-studio-layout-widget:not\(:has\(\[data-widget-kind="stat"\]\)\) \{ grid-column: 1 \/ -1; \}/);
+  assert.match(studio,/\.studio-flow \.ag-studio-layout-content-container:has\(> \.ag-studio-layout-widget\) \{ position: relative; inset: auto; display: flex; flex-wrap: wrap; \}/);
+  assert.match(studio,/\.studio-flow \.ag-studio-layout-widget \{[^}]*position: static;[^}]*width: auto !important;[^}]*min-width: 0;[^}]*min-height: 160px;[^}]*flex: 1 1 240px;/);
+  assert.match(studio,/\.studio-flow \.ag-studio-layout-widget:not\(:has\(\[data-widget-kind="stat"\]\)\) \{ flex-basis: 100%; \}/);
   assert.match(page,/className=\{`studio-host\$\{mode === "view" \? " studio-flow" : ""\}`\}/);
   assert.match(widgets,/function labelled\(\{ id, comp: Body, label, kind \}: Spec\)/);
   assert.match(widgets,/data-widget-kind=\{kind\}/);
@@ -83,4 +83,39 @@ test("filming-sized canvases keep their designed tracks while the 858px canvas c
   for (const width of [880,888,1048]) assert.equal(width <= cutoff,false,`${width}px must keep Studio's designed layout`);
   for (const width of [858,860]) assert.equal(width <= cutoff,true,`${width}px may use compact reflow`);
   assert.equal(861 <= cutoff,false,"the compact range ends at 860px");
+});
+
+test("compact stat runs fill their last row without a stat-count or column-count special case", () => {
+  const studio = readFileSync(new URL("./studio/studio.css",import.meta.url),"utf8");
+  const compact = studio.match(/@container studio-canvas \(max-width: 860px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  // Positive growth shares each line's remaining width; a following full-width tile starts a new line.
+  assert.match(compact,/\.ag-studio-layout-widget \{[^}]*flex: 1 1 240px;/);
+  assert.match(compact,/\.ag-studio-layout-widget:not\(:has\(\[data-widget-kind="stat"\]\)\) \{ flex-basis: 100%; \}/);
+  assert.doesNotMatch(compact,/grid-template-columns|grid-column|nth-(?:child|last-child|of-type)|:last-child/);
+});
+
+test("compact custom tiles grow from in-flow content instead of fixed height or block-size containment", () => {
+  const studio = readFileSync(new URL("./studio/studio.css",import.meta.url),"utf8");
+  const compact = studio.match(/@container studio-canvas \(max-width: 860px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  const rule = (selector: string) => compact.split("\n").find(line => line.trim().startsWith(`${selector} {`)) ?? "";
+  const tile = rule(".studio-flow .ag-studio-layout-widget");
+  assert.match(tile,/height: auto !important/);
+  assert.match(tile,/container-type: inline-size/);
+  assert.match(tile,/min-height: 160px/);
+  assert.match(rule(".studio-flow .ag-studio-layout-widget-content:has(.studio-widget)"),/position: relative; inset: auto/);
+  assert.match(rule(".studio-flow .studio-widget"),/height: auto; min-height: 0; overflow: visible/);
+  assert.match(rule(".studio-flow .studio-value"),/min-width: 0; white-space: normal; overflow-wrap: anywhere/);
+  for (const [, , value] of compact.matchAll(/(?:^|[;{])\s*((?:max-)?height):\s*([^;}]+)/g)) {
+    assert.match(value ?? "",/^(?:auto|none)(?:\s*!important)?\s*$/,"compact tiles must not acquire a fixed or maximum height");
+  }
+});
+
+test("compact verdict headers wrap at words and Grid measures their height without collapsing its scrollport", () => {
+  const studio = readFileSync(new URL("./studio/studio.css",import.meta.url),"utf8");
+  const widgets = readFileSync(new URL("./studio/dashboards.tsx",import.meta.url),"utf8");
+  const compact = studio.match(/@container studio-canvas \(max-width: 860px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  assert.match(compact,/\.studio-flow \.verdict-grid \.ag-root-wrapper \{ min-height: 240px; \}/);
+  assert.match(compact,/\.studio-flow \.changes-grid \.ag-root-wrapper \{ min-height: 180px; \}/);
+  assert.match(compact,/\.studio-flow \.verdict-grid \.ag-header-cell-text \{ white-space: normal; overflow-wrap: normal; \}/);
+  assert.match(widgets,/const VERDICT_DEFAULTS:[^\n]*autoHeaderHeight: true/);
 });

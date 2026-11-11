@@ -353,7 +353,8 @@ const VERDICT_COLUMNS: ColDef<GridRow>[] = [
   { colId: "ids", headerName: "PayPal ids", flex: 2, minWidth: VERDICT_MIN_WIDTHS.ids, sortable: false, cellRenderer: IdsCell },
 ];
 
-const VERDICT_DEFAULTS: ColDef<GridRow> = { sortable: false, resizable: false, suppressMovable: true, flex: 1, minWidth: 56, headerClass: "grid-head" };
+// Compact CSS wraps header text; let Grid measure the resulting height instead of clipping it.
+const VERDICT_DEFAULTS: ColDef<GridRow> = { sortable: false, resizable: false, suppressMovable: true, flex: 1, minWidth: 56, headerClass: "grid-head", autoHeaderHeight: true };
 
 function AttemptLine({ row }: { row: AttemptRow }) {
   const { verdict, detail } = attemptWords(row.attempt);
