@@ -177,6 +177,28 @@ test("a laser-cut-labelled callback cannot finish a code job", async t => {
 	assert.deepEqual(await store.readJob(row.id), before);
 });
 
+// Main ignored the vertical field, so a code job reads a name no physical workflow opens as none: its signed verdict still applies.
+for (const vertical of ["print-fdm", "pcb", "unknown-vertical"]) {
+	test(`a code job applies its signed verdict when the callback names the foreign vertical ${vertical}, as main did`, async t => {
+		const { store, ports, row, body } = await fixture(t, "code" as Vertical);
+		const response = await ingestVerifierCallback(ports, signed({ ...body, vertical }));
+		assert.equal(response.status, 200);
+		assert.deepEqual(await response.json(), { ok: true, applied: true });
+		assert.equal((await store.readJob(row.id))?.state.status, "VERIFIED");
+	});
+}
+
+test("a laser-cut job refuses a signed run failure that names a foreign vertical without changing its run", async t => {
+	const { store, ports, row } = await fixture(t);
+	const before = await store.readJob(row.id);
+	const failure = { runId: verifierRunId(row.id, 1), sourceCommit: submittedCommit, name: "SUBJECT_KILLED", detail: "killed", at: now };
+	const response = await ingestVerifierCallback(ports, signed({ jobId: row.id, ordinal: 1, vertical: "print-fdm",
+		report: { kind: "RUN_FAILED", failure } }));
+	assert.equal(response.status, 409);
+	assert.deepEqual(await response.json(), { error: "VERTICAL_MISMATCH" });
+	assert.deepEqual(await store.readJob(row.id), before);
+});
+
 test("a laser-cut verdict that names a pull request is refused without changing its run", async t => {
 	const { store, ports, row } = await fixture(t);
 	const before = await store.readJob(row.id);

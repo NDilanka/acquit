@@ -1032,11 +1032,14 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 	const job = await ports.store.readJob(parsed.jobId);
 	if (job === null) return Response.json({ ok: true, applied: false });
 	const jobVertical = storedVertical(job);
-	if (parsed.vertical !== undefined && parsed.vertical !== jobVertical) {
+	// A code job reads a name no physical workflow opens as none, as main did: only a name this build opens can mismatch it.
+	const named = jobVertical === CODE_VERTICAL && parsed.vertical !== undefined && physicalWorkflowOf(parsed.vertical) === null
+		? undefined : parsed.vertical;
+	if (named !== undefined && named !== jobVertical) {
 		return Response.json({ error: "VERTICAL_MISMATCH" }, { status: 409 });
 	}
 	// A legacy body names the code vertical, never an implicit physical workflow.
-	if (parsed.vertical === undefined && jobVertical !== CODE_VERTICAL) return Response.json({ ok: true, applied: false });
+	if (named === undefined && jobVertical !== CODE_VERTICAL) return Response.json({ ok: true, applied: false });
 	// The stored job decides the verdict's shape: a physical verdict publishes no pull request, and a code verdict names one.
 	const verified = parsed.report.kind === "VERDICT" && parsed.report.verdict.result === "VERIFIED" ? parsed.report.verdict : null;
 	if (verified !== null && (verified.pullRequest === null) !== (physicalWorkflowOf(jobVertical) !== null)) {
