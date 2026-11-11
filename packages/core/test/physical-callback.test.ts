@@ -149,6 +149,26 @@ for (const vertical of [undefined, "code"]) {
 	});
 }
 
+// Main ignored the vertical field, so a code report whose field is unreadable still counts as the code report it always was.
+const unreadableVerticals: readonly [string, unknown][] = [["null", null], ["7", 7], ["empty", ""], ["over-long", "x".repeat(201)]];
+for (const [label, vertical] of unreadableVerticals) {
+	test(`a code job accepts a signed report whose vertical is ${label}, as main did`, async t => {
+		const { store, ports, row, body } = await fixture(t, "code" as Vertical);
+		const response = await ingestVerifierCallback(ports, signed({ ...body, vertical }));
+		assert.equal(response.status, 200);
+		assert.deepEqual(await response.json(), { ok: true, applied: true });
+		assert.equal((await store.readJob(row.id))?.state.status, "VERIFIED");
+	});
+	test(`a laser-cut job reads a signed report whose vertical is ${label} as no report at all`, async t => {
+		const { store, ports, row, body } = await fixture(t);
+		const before = await store.readJob(row.id);
+		const response = await ingestVerifierCallback(ports, signed({ ...body, vertical }));
+		assert.equal(response.status, 200);
+		assert.deepEqual(await response.json(), { ok: true, applied: false });
+		assert.deepEqual(await store.readJob(row.id), before);
+	});
+}
+
 test("a laser-cut-labelled callback cannot finish a code job", async t => {
 	const { store, ports, row, body } = await fixture(t, "code" as Vertical);
 	const before = await store.readJob(row.id);
@@ -191,12 +211,12 @@ test("an authentic callback for a missing job stays a no-op", async t => {
 	assert.deepEqual(await store.readJob(row.id), before);
 });
 
-test("the signed parser retains a vertical and refuses malformed vertical fields", async t => {
+test("the signed parser retains a readable vertical and reads an unreadable one as none", async t => {
 	const { ports, body } = await fixture(t);
 	assert.deepEqual(await ports.verifier.parseCallback(signed({ ...body, vertical: "laser-cut" })), { ...body, vertical: "laser-cut" });
 	assert.deepEqual(parseCallbackBody(body), body);
 	for (const vertical of [null, 7, "", "x".repeat(201)]) {
-		assert.equal(parseCallbackBody({ ...body, vertical }), null);
+		assert.deepEqual(parseCallbackBody({ ...body, vertical }), body);
 	}
 	assert.equal(parseCallbackBody({ ...body, vertical: "x".repeat(200) })?.vertical, "x".repeat(200));
 });

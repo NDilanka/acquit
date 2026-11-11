@@ -98,14 +98,16 @@ function signatureMatches(body: string, header: string, secret: string): boolean
 	return left.length === right.length && timingSafeEqual(left, right);
 }
 
-/** Untrusted bytes become a typed report here or not at all. */
+/**
+ * Untrusted bytes become a typed report here or not at all. A vertical the body names must be readable text;
+ * any other value reads as no vertical, as it did before verticals existed, so a code report is never refused for it.
+ */
 export function parseCallbackBody(value: unknown): { readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly report: VerifierReport; readonly vertical?: string } | null {
 	if (!value || typeof value !== "object") return null;
 	const body = value as Record<string, unknown>;
 	const jobId = typeof body.jobId === "string" && /^job_[A-Za-z0-9_-]{4,80}$/.test(body.jobId) ? body.jobId as JobId : null;
 	const ordinal = body.ordinal === 1 || body.ordinal === 2 || body.ordinal === 3 ? body.ordinal : null;
-	const vertical = body.vertical === undefined ? undefined : nonEmptyString(body.vertical);
-	if (vertical === null) return null;
+	const vertical = nonEmptyString(body.vertical) ?? undefined;
 	const report = parseReport(body.report);
 	return jobId && ordinal && report ? { jobId, ordinal, report, ...(vertical === undefined ? {} : { vertical }) } : null;
 }
