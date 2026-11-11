@@ -57,8 +57,8 @@
 .explain-line .mono { overflow-wrap: anywhere; }
 .explain-open { align-self: flex-start; }
 /* A KPI tile's Explain shares the label's row, so the value and its note keep the tile's height on a phone. */
-.studio-widget:has(> .explain-open) { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 8px; align-content: start; }
-.studio-widget:has(> .explain-open) > .eyebrow { grid-column: 1; grid-row: 1; min-width: 0; }
+.studio-widget:has(> .explain-open) { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--space-4); align-content: start; }
+.studio-widget:has(> .explain-open) > .eyebrow { grid-column: 1; grid-row: 1; min-width: 0; overflow-wrap: anywhere; }
 .studio-widget:has(> .explain-open) > .explain-open { grid-column: 2; grid-row: 1; align-self: center; }
 .studio-widget:has(> .explain-open) > :not(.eyebrow):not(.explain-open) { grid-column: 1 / -1; }
 .explain-dialog { width: min(560px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: 85vh; overflow-y: auto; margin: auto; padding: 16px 16px;
