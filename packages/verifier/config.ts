@@ -21,6 +21,7 @@ export const VERIFIER_NAMES = {
 	runDeadlineMs: "ACQUIT_VERIFIER_RUN_DEADLINE_MS",
 	clientRepository: "ACQUIT_CLIENT_REPOSITORY",
 	fixtures: "ACQUIT_FIXTURES",
+	physicalSealedDir: "ACQUIT_PHYSICAL_SEALED_DIR",
 } as const;
 export type VerifierKey = keyof typeof VERIFIER_NAMES;
 
@@ -100,6 +101,11 @@ export function githubAppEnv(env: NodeJS.ProcessEnv = process.env): { readonly a
 /** The API reads the client repository here; the verifier service reads it from the contract it is handed. */
 export function clientRepositoryEnv(env: NodeJS.ProcessEnv = process.env): string {
 	return parseClientRepository(verifierValue("clientRepository", env));
+}
+
+/** The private directory the physical sealed checks are kept in. Empty when unset: a physical run then names it and is not judged. */
+export function physicalSealedDirEnv(env: NodeJS.ProcessEnv = process.env): string {
+	return verifierValue("physicalSealedDir", env);
 }
 
 /** The deployment's private scoping store, through the one shared resolver the API also uses: the
