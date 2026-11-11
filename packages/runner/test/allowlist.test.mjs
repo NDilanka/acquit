@@ -66,6 +66,19 @@ test("under openrouter, api.anthropic.com is denied and openrouter.ai is allowed
 	assert.equal(allowedForward(new URL("http://api.anthropic.com/v1/messages"), hosts), false);
 });
 
+test("under fireworks, the proxy allows api.fireworks.ai on 443 alone and refuses its look-alikes and the Anthropic host", () => {
+	assert.deepEqual(providerHosts("api.fireworks.ai"), ["api.fireworks.ai"]);
+	const hosts = allowedHosts("api.fireworks.ai");
+	assert.deepEqual([...hosts].sort(), ["api.fireworks.ai", "registry.npmjs.org"]);
+	assert.equal(allowedConnect("api.fireworks.ai:443", hosts), true);
+	assert.equal(allowedConnect("api.fireworks.ai:80", hosts), false);
+	assert.equal(allowedConnect("evil-api.fireworks.ai:443", hosts), false);
+	assert.equal(allowedConnect("api.anthropic.com:443", hosts), false);
+	assert.equal(allowedConnect("registry.npmjs.org:443", hosts), true);
+	assert.equal(allowedForward(new URL("http://api.fireworks.ai/inference/v1/messages"), hosts), true);
+	assert.equal(allowedForward(new URL("http://api.anthropic.com/v1/messages"), hosts), false);
+});
+
 test("a CONNECT authority parses host:port, a bare host, and IPv6 brackets", () => {
 	assert.deepEqual(parseAuthority("registry.npmjs.org:443"), { host: "registry.npmjs.org", port: 443 });
 	assert.deepEqual(parseAuthority("registry.npmjs.org"), { host: "registry.npmjs.org", port: 443 });

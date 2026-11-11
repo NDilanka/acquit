@@ -1,7 +1,8 @@
 // The deployment's House: the API's own delivery loop. One scan per tick picks the held House jobs
 // and walks each through the delivery series in this process -- the same Submit edge every operator
-// uses, the same sandbox path the CLI runs, the model provider switch naming droid by default and
-// the OpenRouter path when selected. The loop is bounded from every side: one delivery at a time,
+// uses, the same sandbox path the CLI runs, and the House's own provider (ACQUIT_HOUSE_PROVIDER):
+// Fireworks when its key is configured, droid otherwise, or the OpenRouter path when selected. The
+// loop is bounded from every side: one delivery at a time,
 // two calls per job ever, ten submits per series, and a scan that stops at the first in-flight
 // delivery.
 

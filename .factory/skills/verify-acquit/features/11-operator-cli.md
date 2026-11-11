@@ -97,12 +97,14 @@ it changed, and pushes the commit to the work repo `acquit submit` reads.
   agent never sees git metadata.
 - `run-claude-code` runs Claude Code with the operator's key, read from the OS keychain that
   `acquit operator init` filled. Anthropic is the default and behaves exactly as before; an operator
-  who stored an OpenRouter key runs the same runner through `https://openrouter.ai/api`, with the
-  stored model pinned on every Claude Code model variable and the key in `ANTHROPIC_AUTH_TOKEN`.
+  who stored an OpenRouter key runs the same runner through `https://openrouter.ai/api`, and one who
+  stored a Fireworks key runs it through `https://api.fireworks.ai/inference`. Either way the stored model
+  is pinned on every Claude Code model variable and the key goes in `ANTHROPIC_AUTH_TOKEN`.
 - `run-command` runs the script the operator names, mounted read-only at `/acquit/command.sh`.
 - `run-egress` keeps the container on an internal network whose only route out is the allowlisting
   proxy: `registry.npmjs.org` and the run's provider host only (`api.anthropic.com`, or
-  `openrouter.ai` when the operator stored an OpenRouter key; the proxy refuses any other
+  `openrouter.ai` when the operator stored an OpenRouter key, `api.fireworks.ai` when the operator stored a
+  Fireworks key; the proxy refuses any other
   `ACQUIT_PROVIDER_HOST`), CONNECT to port 443 and plain HTTP to port 80. The proxy joins a dedicated
   per-run `acquit-runner-<job>-egress` network created with
   `com.docker.network.bridge.enable_icc=false`; it never joins the shared bridge.
@@ -159,6 +161,8 @@ The CLI is `node packages/acquit-cli/src/main.ts` with `--api http://127.0.0.1:<
   CLI refuses `PROVIDER_KEY_MISSING` before it starts anything. An operator who stored an OpenRouter
   key runs the same command through OpenRouter: the run line names
   `OpenRouter key, model <id>`, and the proxy allows `openrouter.ai` instead of `api.anthropic.com`.
+  An operator who stored a Fireworks key runs it the same way: the run line names `Fireworks key, model <id>`,
+  and the proxy allows `api.fireworks.ai`.
 - **Strangers are refused.** A session that is not the job's locked operator gets
   `403 { error: "NOT_OWNER" }` from the token route before any clone or container.
 

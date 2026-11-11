@@ -11,10 +11,10 @@ import type { Keychain } from "./keychain.ts";
 /** The providers a stored key can run. The app's droid runs never come from the keychain -- the
  * switch reads `ACQUIT_MODEL_PROVIDER` and the key arrives in-process -- but the sandbox, the proxy,
  * and the provider table they share are generic over every provider a run can name. */
-export type Provider = "anthropic" | "openrouter" | "droid";
+export type Provider = "anthropic" | "openrouter" | "droid" | "fireworks";
 
 export type ProviderSpec = {
-	readonly label: string;            // "Anthropic", "OpenRouter", "Factory"
+	readonly label: string;            // "Anthropic", "OpenRouter", "Factory", "Fireworks"
 	readonly hosts: readonly string[]; // the provider host(s) the proxy allows, in dial order
 	readonly keyVar: string;           // the env var that carries the key, passed by name only
 	readonly defaultModel: string | null;
@@ -22,6 +22,10 @@ export type ProviderSpec = {
 };
 
 const OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash";
+
+/** The coding agent's Fireworks models: Kimi is the default, GLM the one fallback House may retry on. */
+export const FIREWORKS_DEFAULT_MODEL = "accounts/fireworks/models/kimi-k3p1-pro";
+export const FIREWORKS_FALLBACK_MODEL = "accounts/fireworks/models/glm-5p3";
 
 /**
  * The provider table `run.ts` and the proxy read: one row per runnable provider. Anthropic keeps the
@@ -57,6 +61,31 @@ export const PROVIDER_SPECS: Readonly<Record<Provider, ProviderSpec>> = {
 			};
 		},
 	},
+	fireworks: {
+		label: "Fireworks",
+		hosts: ["api.fireworks.ai"],
+		keyVar: "ANTHROPIC_AUTH_TOKEN",
+		defaultModel: FIREWORKS_DEFAULT_MODEL,
+		fixedEnv: model => {
+			const pinned = model ?? FIREWORKS_DEFAULT_MODEL;
+			return {
+				// Fireworks' Messages base, without /v1: Claude Code appends /v1/messages itself. The key goes
+				// as a Bearer token in ANTHROPIC_AUTH_TOKEN, never in ANTHROPIC_API_KEY.
+				ANTHROPIC_BASE_URL: "https://api.fireworks.ai/inference",
+				ANTHROPIC_API_KEY: "",
+				ANTHROPIC_MODEL: pinned,
+				ANTHROPIC_DEFAULT_OPUS_MODEL: pinned,
+				ANTHROPIC_DEFAULT_SONNET_MODEL: pinned,
+				ANTHROPIC_DEFAULT_HAIKU_MODEL: pinned,
+				CLAUDE_CODE_SUBAGENT_MODEL: pinned,
+				// Claude Code retries a failed request ten times by default, and its retry watchdog can retry a
+				// 429 forever. House owns the one bounded retry (Kimi to GLM), so the client makes none of its own.
+				CLAUDE_CODE_MAX_RETRIES: "0",
+				CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES: "0",
+				CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: "1",
+			};
+		},
+	},
 	droid: {
 		label: "Factory",
 		hosts: ["api.factory.ai", "prem.factory.ai"],
@@ -71,7 +100,8 @@ export const PROVIDER_SPECS: Readonly<Record<Provider, ProviderSpec>> = {
  * every earlier build stored only anthropic, and an unknown name must not widen what a run may reach.
  */
 export function storedProvider(value: string | null | undefined): Provider {
-	return value === "openrouter" ? "openrouter" : "anthropic";
+	if (value === "openrouter" || value === "fireworks") return value;
+	return "anthropic";
 }
 
 /** What a run needs from the keychain: which provider and model the operator stored, and its key. */
@@ -133,17 +163,17 @@ type Onboarding = {
 };
 
 function providerOf(value: string): Provider {
-	// Only Anthropic and OpenRouter keys reach a runner today, so storing an OpenAI one would store a
-	// key that nothing can use.
-	if (value === "openai") throw new CliError("PROVIDER_UNSUPPORTED", "Only an Anthropic or OpenRouter key runs today.");
-	if (value === "anthropic" || value === "openrouter") return value;
-	throw new CliError("USAGE", "The provider must be anthropic or openrouter.");
+	// Only Anthropic, OpenRouter, and Fireworks keys reach a runner today, so storing an OpenAI one would
+	// store a key that nothing can use.
+	if (value === "openai") throw new CliError("PROVIDER_UNSUPPORTED", "Only an Anthropic, OpenRouter, or Fireworks key runs today.");
+	if (value === "anthropic" || value === "openrouter" || value === "fireworks") return value;
+	throw new CliError("USAGE", "The provider must be anthropic, openrouter, or fireworks.");
 }
 
 export function parseOperatorArgs(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): OperatorInitOptions {
 	const { apiUrl, rest } = apiFlag(argv, env);
 	if (rest[0] !== "init") {
-		throw new CliError("USAGE", "Usage: acquit operator init [--provider anthropic|openrouter] [--model <id>] [--provider-key-stdin] [--api <url>]");
+		throw new CliError("USAGE", "Usage: acquit operator init [--provider anthropic|openrouter|fireworks] [--model <id>] [--provider-key-stdin] [--api <url>]");
 	}
 	let provider: Provider | null = null;
 	let model: string | null = null;
@@ -163,8 +193,8 @@ export function parseOperatorArgs(argv: readonly string[], env: NodeJS.ProcessEn
 		else throw new CliError("USAGE", `Unknown flag ${flag}.`);
 	}
 	if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1) throw new CliError("USAGE", "--timeout takes whole seconds.");
-	if (keyOnStdin && provider === null) throw new CliError("USAGE", "--provider-key-stdin needs --provider anthropic or openrouter.");
-	if (model !== null && provider !== "openrouter") throw new CliError("USAGE", "--model needs --provider openrouter.");
+	if (keyOnStdin && provider === null) throw new CliError("USAGE", "--provider-key-stdin needs --provider anthropic, openrouter, or fireworks.");
+	if (model !== null && provider !== "openrouter" && provider !== "fireworks") throw new CliError("USAGE", "--model needs --provider openrouter or fireworks.");
 	return { apiUrl, token: resolveToken(undefined, env, () => readLogin(env)?.token ?? null), provider, model, keyOnStdin, timeoutSeconds, pollMs: 1_000 };
 }
 
@@ -230,11 +260,11 @@ export async function runOperatorInit(options: OperatorInitOptions, deps: Operat
 		answerLine(question, provider, answer.echoed);
 	} else emit(`${question}${provider}`);
 
-	// Only OpenRouter needs a model named up front. It is asked only in the flow that just answered
+	// OpenRouter and Fireworks need a model named up front. It is asked only in the flow that just answered
 	// the provider prompt: a stated --provider takes --model or the provider's own default.
 	let model = options.model;
-	if (provider === "openrouter") {
-		const spec = PROVIDER_SPECS.openrouter;
+	if (provider === "openrouter" || provider === "fireworks") {
+		const spec = PROVIDER_SPECS[provider];
 		if (model === null && options.provider === null) {
 			const modelQuestion = `\tModel (${spec.defaultModel}): `;
 			deps.write(modelQuestion);

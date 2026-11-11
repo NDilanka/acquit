@@ -13,8 +13,11 @@ RUN apt-get update \
 
 # The model CLIs the runners start. They run with the operator's key and the sandbox network; the
 # image itself never sees a key.
-RUN npm install --global @anthropic-ai/claude-code \
- && npm cache clean --force
+# Pinned: the Fireworks spike proved the bounded argv, the retry env, and the WebSearch disable on this
+# release, so a silent upgrade cannot change what a House run does.
+RUN npm install --global @anthropic-ai/claude-code@2.1.322 \
+ && npm cache clean --force \
+ && claude --version
 
 # droid is installed from Factory's official release channel at the pinned version, the same pick
 # the official installer (https://app.factory.ai/cli) makes for linux: x64, or the AVX2 baseline
