@@ -77,13 +77,13 @@ const OPEN_JOB = {
 };
 
 describe("the A2 MCP server's stdio surface", () => {
-	it("exposes exactly the six approved tools", async () => {
+	it("exposes exactly the six approved tools and the read-only verify_escrow_hold", async () => {
 		const api = await stubApi({});
 		try {
 			await withClient({ ACQUIT_API: api.url, ACQUIT_TOKEN: TOKEN }, async client => {
 				const tools = await client.listTools();
 				assert.deepEqual(tools.tools.map(tool => tool.name).sort(), [
-					"get_job", "get_payout_status", "get_receipt", "list_jobs", "place_bid", "submit_attempt",
+					"get_job", "get_payout_status", "get_receipt", "list_jobs", "place_bid", "submit_attempt", "verify_escrow_hold",
 				]);
 			});
 		} finally { await api.close(); }
@@ -99,6 +99,51 @@ describe("the A2 MCP server's stdio surface", () => {
 				assert.deepEqual(Object.keys(properties).sort(), ["dir", "jobId"]);
 				assert.deepEqual(Object.keys(properties).filter(key => /confirm|approv|force|yes|skip/i.test(key)), [],
 					"no argument the model sets can stand in for the operator's typed confirmation");
+			});
+		} finally { await api.close(); }
+	});
+});
+
+/** The API's stored record for a job PayPal confirmed, with payer data the tool must not return. */
+const PAID_CHECK = {
+	jobId: "job_a2paid", orderId: "8AB12345CD678901E", checkedAt: "2026-11-10T18:00:00.000Z", outcome: "HELD",
+	orderStatus: "APPROVED", captureStatus: "COMPLETED", heldValue: "400.00", heldCurrency: "USD", reason: null,
+	payer: { email_address: "client@example.test" },
+};
+
+describe("verify_escrow_hold, the read-only view of PayPal's recorded check", () => {
+	it("returns the stored record's fields with no payer data, and makes no PayPal call", async () => {
+		const api = await stubApi({ "GET /api/jobs/job_a2paid/paypal-check": { check: PAID_CHECK } });
+		try {
+			await withClient({ ACQUIT_API: api.url, ACQUIT_TOKEN: TOKEN }, async client => {
+				const result = await client.callTool({ name: "verify_escrow_hold", arguments: { jobId: "job_a2paid" } });
+				const raw = (result.content as { text: string }[])[0]?.text ?? "";
+				const body = JSON.parse(raw) as { jobId: string; environment: string; check: Record<string, unknown> };
+				assert.notEqual(result.isError, true);
+				assert.equal(body.jobId, "job_a2paid");
+				assert.equal(body.environment, "PayPal sandbox");
+				assert.deepEqual(Object.keys(body.check).sort(), ["captureStatus", "checkedAt", "heldCurrency", "heldValue",
+					"orderId", "orderStatus", "outcome", "reason"]);
+				assert.equal(body.check.outcome, "HELD");
+				assert.equal(body.check.heldValue, "400.00");
+				assert.equal(body.check.heldCurrency, "USD");
+				assert.equal(body.check.orderId, "8AB12345CD678901E");
+				assert.doesNotMatch(raw, /client@example|payer/i, "no payer data leaves the server");
+			});
+			assert.deepEqual(api.requests.map(request => request.path), ["GET /api/jobs/job_a2paid/paypal-check"],
+				"the only call is the API's stored-record read: the tool never calls PayPal");
+		} finally { await api.close(); }
+	});
+
+	it("answers that no check is recorded, without an error, when the job has none", async () => {
+		const api = await stubApi({ "GET /api/jobs/job_a2open/paypal-check": { check: null } });
+		try {
+			await withClient({ ACQUIT_API: api.url, ACQUIT_TOKEN: TOKEN }, async client => {
+				const result = await client.callTool({ name: "verify_escrow_hold", arguments: { jobId: "job_a2open" } });
+				const body = JSON.parse((result.content as { text: string }[])[0]?.text ?? "{}") as { check: unknown; note: string };
+				assert.notEqual(result.isError, true);
+				assert.equal(body.check, null);
+				assert.match(body.note, /No PayPal check is recorded/);
 			});
 		} finally { await api.close(); }
 	});

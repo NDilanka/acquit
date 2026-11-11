@@ -1266,6 +1266,23 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		else json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
 		return;
 	}
+	const checkMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/paypal-check$/);
+	if (checkMatch && method === "GET") {
+		// PayPal's recorded check of the job's money at work start, read from the stored record only: no PayPal call
+		// happens here. A job nobody has checked answers null, and so does a deployment without PayPal credentials.
+		// Open jobs are visible to every operator, so the check is narrower: the owning client and the operators who bid.
+		const jobId = validJobId(decodeURIComponent(checkMatch[1]));
+		const result = await acquit.query(current.actor, { type: "Job", jobId });
+		if (result.kind !== "JOB") {
+			json(res, result.kind === "DENIED" && result.reason === "NOT_FOUND" ? 404 : 403, { error: result.kind === "DENIED" ? result.reason : "NOT_FOUND" });
+			return;
+		}
+		const actor = current.actor;
+		const party = actor.role === "CLIENT" && result.job.client === actor.clientId
+			|| actor.role === "OPERATOR" && result.job.bids.operators.some(bid => bid.operator === actor.operatorId);
+		if (!party) { json(res, 403, { error: "NOT_OWNER" }); return; }
+		json(res, 200, { check: payPalCheck.recordsOf([jobId]).get(jobId) ?? null }); return;
+	}
 	if (url.pathname === "/api/me/onboarding" && method === "GET") {
 		// The merchant status the server already holds, so the CLI never talks to PayPal with a secret.
 		const result = await acquit.query(current.actor, { type: "Operator" });
