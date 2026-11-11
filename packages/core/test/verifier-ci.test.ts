@@ -100,6 +100,16 @@ test("a physical-only reason is named only by a physical job's verdict, and a co
 	}
 });
 
+test("a verified verdict names no pull request only on a physical callback, and a code verdict that names none is refused at parse", () => {
+	const unnamed = { ...verifiedReport.report.verdict, pullRequest: null };
+	const report = { kind: "VERDICT", verdict: unnamed };
+	assert.equal(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, report }), null, "no vertical reads as code");
+	assert.equal(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, vertical: "code", report }), null, "code");
+	assert.equal(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, vertical: "laser-cut", report })?.ordinal, 1, "laser");
+	assert.equal(parseVerdict(unnamed), null);
+	assert.equal(parseCallbackBody({ jobId: "job_ci_test", ordinal: 1, vertical: "code", report: verifiedReport.report })?.ordinal, 1, "code names its pull request");
+});
+
 test("parseVerdict refuses a verdict it cannot fully justify and keeps a rejection's named reason", () => {
 	const rejected = { result: "REJECTED", runId: "run_ci_2", sourceCommit: FROZEN_COMMIT, at: "2026-10-06T12:00:00Z", reasonsTruncated: 0,
 		reasons: [{ kind: "PROTECTED_PATH_MODIFIED", path: "tests/totals.test.ts" }, { kind: "TESTS_FAILED", suite: "hidden", failed: ["hidden:1"] }] };

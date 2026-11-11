@@ -56,9 +56,8 @@ function verifyingRow(vertical: Vertical = laserVertical): JobRow {
 	return plan.next;
 }
 
-function reportFor(row: JobRow): VerifierReport {
+function reportFor(row: JobRow, physical = storedVertical(row) === laserVertical): VerifierReport {
 	// A physical verdict publishes nothing: no pull request, and its merge commit is the submitted commit.
-	const physical = storedVertical(row) === laserVertical;
 	return { kind: "VERDICT", verdict: { result: "VERIFIED", runId: verifierRunId(row.id, 1), sourceCommit: submittedCommit,
 		mergeCommit: physical ? submittedCommit : judgedCommit, pullRequest: physical ? null : 13,
 		frozen: { expected: 0, passed: 0 }, hidden: { expected: 0, passed: 0 }, reportDigest: "1".repeat(64) as Digest, at: now } };
@@ -112,20 +111,20 @@ test("a signed laser-cut callback completes its stored vertical despite code aut
 });
 
 test("a code-labelled callback for a laser-cut job is refused without changing its pending run", async t => {
-	const { store, ports, row, body } = await fixture(t);
+	const { store, ports, row } = await fixture(t);
 	const before = await store.readJob(row.id);
-	const response = await ingestVerifierCallback(ports, signed({ ...body, vertical: "code" }));
+	const response = await ingestVerifierCallback(ports, signed({ jobId: row.id, ordinal: 1, vertical: "code", report: reportFor(row, false) }));
 	assert.equal(response.status, 409);
 	assert.deepEqual(await response.json(), { error: "VERTICAL_MISMATCH" });
 	assert.deepEqual(await store.readJob(row.id), before);
 });
 
-test("a callback without a vertical is a no-op for a laser-cut job", async t => {
+test("a callback without a vertical reads as code, so a laser-cut verdict with no pull request is refused at parse", async t => {
 	const { store, ports, row, body } = await fixture(t);
 	const before = await store.readJob(row.id);
 	const response = await ingestVerifierCallback(ports, signed(body));
-	assert.equal(response.status, 200);
-	assert.deepEqual(await response.json(), { ok: true, applied: false });
+	assert.equal(response.status, 401);
+	assert.deepEqual(await response.json(), { error: "UNAUTHENTICATED" });
 	assert.deepEqual(await store.readJob(row.id), before);
 });
 
@@ -163,8 +162,8 @@ for (const [label, vertical] of unreadableVerticals) {
 		const { store, ports, row, body } = await fixture(t);
 		const before = await store.readJob(row.id);
 		const response = await ingestVerifierCallback(ports, signed({ ...body, vertical }));
-		assert.equal(response.status, 200);
-		assert.deepEqual(await response.json(), { ok: true, applied: false });
+		assert.equal(response.status, 401);
+		assert.deepEqual(await response.json(), { error: "UNAUTHENTICATED" });
 		assert.deepEqual(await store.readJob(row.id), before);
 	});
 }
@@ -190,15 +189,15 @@ test("a laser-cut verdict that names a pull request is refused without changing 
 	assert.deepEqual(await store.readJob(row.id), before);
 });
 
-test("a code verdict that names no pull request is refused without changing its run", async t => {
+test("a code verdict that names no pull request is refused at parse without changing its run", async t => {
 	const { store, ports, row } = await fixture(t, "code" as Vertical);
 	const before = await store.readJob(row.id);
 	const verdict = { result: "VERIFIED", runId: verifierRunId(row.id, 1), sourceCommit: submittedCommit, mergeCommit: judgedCommit,
 		pullRequest: null, frozen: { expected: 0, passed: 0 }, hidden: { expected: 0, passed: 0 }, reportDigest: "1".repeat(64), at: now };
 	const response = await ingestVerifierCallback(ports, signed({ jobId: row.id, ordinal: 1, vertical: "code",
 		report: { kind: "VERDICT", verdict } }));
-	assert.equal(response.status, 409);
-	assert.deepEqual(await response.json(), { error: "VERDICT_MISMATCH" });
+	assert.equal(response.status, 401);
+	assert.deepEqual(await response.json(), { error: "UNAUTHENTICATED" });
 	assert.deepEqual(await store.readJob(row.id), before);
 });
 
@@ -213,12 +212,15 @@ test("an authentic callback for a missing job stays a no-op", async t => {
 
 test("the signed parser retains a readable vertical and reads an unreadable one as none", async t => {
 	const { ports, body } = await fixture(t);
+	const { body: codeBody } = await fixture(t, "code" as Vertical);
 	assert.deepEqual(await ports.verifier.parseCallback(signed({ ...body, vertical: "laser-cut" })), { ...body, vertical: "laser-cut" });
-	assert.deepEqual(parseCallbackBody(body), body);
+	// Read as none, the laser verdict names no pull request, which only a physical callback may carry.
+	assert.equal(parseCallbackBody(body), null);
+	assert.deepEqual(parseCallbackBody(codeBody), codeBody);
 	for (const vertical of [null, 7, "", "x".repeat(201)]) {
-		assert.deepEqual(parseCallbackBody({ ...body, vertical }), body);
+		assert.deepEqual(parseCallbackBody({ ...codeBody, vertical }), codeBody);
 	}
-	assert.equal(parseCallbackBody({ ...body, vertical: "x".repeat(200) })?.vertical, "x".repeat(200));
+	assert.equal(parseCallbackBody({ ...codeBody, vertical: "x".repeat(200) })?.vertical, "x".repeat(200));
 });
 
 for (const [kind, field] of [["DELIVERY_MISSING", "path"], ["CHECK_FAILED", "detail"]] as const) {

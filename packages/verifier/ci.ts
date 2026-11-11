@@ -163,7 +163,8 @@ export function parseVerdict(value: unknown, physical = false): Verdict | null {
 	if (raw.result !== "VERIFIED") return null;
 	const mergeCommit = nonEmptyString(raw.mergeCommit);
 	const named = typeof raw.pullRequest === "number" && Number.isSafeInteger(raw.pullRequest) && raw.pullRequest > 0;
-	if (!named && raw.pullRequest !== null) return null;
+	// A code verdict names its pull request, as it always has. Only a physical job's verdict names none.
+	if (!named && (raw.pullRequest !== null || !physical)) return null;
 	const pullRequest = named ? raw.pullRequest as number : null;
 	const frozen = parseTally(raw.frozen);
 	const hidden = parseTally(raw.hidden);
