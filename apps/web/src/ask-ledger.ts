@@ -54,6 +54,7 @@ const DELEGATION_RECIPE = [
   "The widget agent adds the widget if it is new, then configures it.",
   "If no catalogue type fits the request, decline and name the closest types instead of delegating.",
   "Report its result honestly: when it reports an error, tell the reader the widget was not made and why. Never claim the widget was made unless its result says so.",
+  "Say it in plain words: never quote the result's text, and never print a widget type id or a widget id to the reader.",
 ].join("\n");
 
 /** The data and page agents are Studio's built-ins; the ledger agent hands them questions and changes the same way. */
@@ -94,9 +95,12 @@ export const SAMPLE_ASK_INSTRUCTIONS = [
   "delegate_to is always available. Say a delegation failed only when its result reports an error (the delegate_to result in this conversation), and then say why.",
 ].join("\n");
 
+// One starter each for money, a widget, and a number explained. Each was measured 5 of 5 against the Fireworks model within
+// 20 seconds on 2026-11-10: money 2-4 model turns, widget 2 turns (its delegation answered by a stand-in), number 2-3 turns.
 export const SAMPLE_ASK_PROMPT_STARTERS: AgAiPromptStarter[] = [
-  { label: "Which sample jobs still hold escrow?", prompt: "Which sample jobs still hold escrow, and how much is held on each?" },
-  { label: "Trace the sample held figure", prompt: "Trace the sample held figure to the sample ledger lines that make it up." },
+  { label: "What was released to operators?", prompt: "How much sample money was released to operators?" },
+  { label: "Add a fees widget", prompt: "Add a widget that shows the sample fees." },
+  { label: "Why is held above released?", prompt: "Why is the sample held amount higher than the released amount?" },
 ];
 
 export const ASK_PROMPT_STARTERS: AgAiPromptStarter[] = [
@@ -244,9 +248,17 @@ export function askErrorText(error: ApiError): string {
       return "Ask the ledger has no model key on the server, so it cannot answer yet.";
     case "MODEL_RATE_LIMITED":
       return `The model is rate limited right now. Try again in a minute.${detail}`;
-    // A 429 for MODEL_BUDGET is either the shared budget or an operator's own turn limit, so the copy names neither.
+    // A 429 for MODEL_BUDGET carries the window that ran out when the API can say which one: a turn limit, the busy sample
+    // book, or a window of the shared model budget (shared with other visitors, so no copy says the budget is out). A
+    // refusal with no token this copy knows, such as a budget lock that never freed, keeps the generic copy.
     case "MODEL_BUDGET":
-      return "Ask the ledger is out of model budget for now. Try again later.";
+      if (error.detail === "per-minute") return "You have asked too many questions in a minute. Try again in a minute.";
+      if (error.detail === "per-day") return "You have reached today's question limit. Try again in 24 hours.";
+      if (error.detail === "busy") return "Sample Ask is busy with other questions. Try again in a moment.";
+      if (error.detail === "per-key-day") return "The Ask allowance for this account or network is used up for today. Try again in 24 hours.";
+      if (error.detail === "shared-minute") return "Ask has reached its per-minute limit, which other visitors share. Try again in a minute.";
+      if (error.detail === "shared-day") return "Ask has reached its daily limit, which other visitors share. Try again in 24 hours.";
+      return "Ask could not run right now. Try again in a minute.";
     case "MODEL_PROVIDER_ERROR":
       return `The model provider failed to answer.${detail}`;
     case "MODEL_TIMEOUT":

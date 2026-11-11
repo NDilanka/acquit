@@ -8,8 +8,10 @@ import {
   operatorLine,
   outcomeLine,
   paypalLines,
+  receiptJsonHref,
   receiptPageHref,
   reasonWords,
+  sumCheck,
   tallyWords,
   SANDBOX_NOTE,
   SCRIPTED_NOTE,
@@ -53,6 +55,11 @@ const TAMPERED: DigestCheck = { kind: "COMPUTED", digest: "54842b81de0e36a4b6cd7
 test("the receipt link is the public page for a receipt id, with the id encoded", () => {
   assert.equal(receiptPageHref("rcpt_abc"), "/receipts/rcpt_abc");
   assert.equal(receiptPageHref("rcpt a/b"), "/receipts/rcpt%20a%2Fb");
+});
+
+test("the JSON link is the API's own address for the same receipt, with the id encoded", () => {
+  assert.equal(receiptJsonHref("rcpt_abc"), "/api/receipts/rcpt_abc");
+  assert.equal(receiptJsonHref("rcpt a/b"), "/api/receipts/rcpt%20a%2Fb");
 });
 
 test("a digest verdict matches only when the browser's digest equals the committed one", () => {
@@ -105,15 +112,39 @@ test("the headline names the outcome, the amount, the operator, the time, and th
     "Verified and paid. 360.00 USD released to the operator on 2026-10-12 00:00 UTC.");
 });
 
-test("the money lines name the gross held, the payout, and the two parts of the fee", () => {
+test("the money lines name the gross held, the released amount, and the two parts of the fee", () => {
   assert.deepEqual(moneyLines(receipt().money), [
     { label: "Held in escrow (gross)", value: "420.00 USD" },
-    { label: "Paid to the operator", value: "360.00 USD" },
+    { label: "Released to the operator", value: "360.00 USD" },
     { label: "Processing fee (PayPal)", value: "15.15 USD" },
     { label: "Platform fee (Acquit)", value: "44.85 USD" },
   ]);
-  assert.equal(moneyLines({ heldCents: null, paidCents: 36_000, feeCents: null, processorFeeCents: null, acquitFeeCents: null })[0]?.value,
-    "Not recorded");
+});
+
+test("a money figure the API did not serve gets no row, and nothing is invented in its place", () => {
+  assert.deepEqual(moneyLines({ heldCents: null, paidCents: 36_000, feeCents: null, processorFeeCents: null, acquitFeeCents: null }),
+    [{ label: "Released to the operator", value: "360.00 USD" }]);
+  assert.deepEqual(moneyLines({ heldCents: 42_000, paidCents: 36_000, feeCents: 6_000, processorFeeCents: 1_515, acquitFeeCents: null })
+    .map(line => line.label), ["Held in escrow (gross)", "Released to the operator", "Processing fee (PayPal)"]);
+});
+
+test("the sum check names Held = Released + PayPal fee + Acquit fee with the served amounts, and holds when they add up", () => {
+  assert.deepEqual(sumCheck(receipt().money), {
+    equation: "Held = Released + PayPal fee + Acquit fee",
+    figures: "420.00 USD = 360.00 USD + 15.15 USD + 44.85 USD",
+    holds: true,
+  });
+});
+
+test("the sum check says it does not hold when the served amounts miss by a cent", () => {
+  const off = sumCheck({ heldCents: 42_001, paidCents: 36_000, feeCents: 6_000, processorFeeCents: 1_515, acquitFeeCents: 4_485 });
+  assert.equal(off?.holds, false);
+});
+
+test("the sum check is shown only when the held amount and both fee parts are all served", () => {
+  assert.equal(sumCheck({ heldCents: null, paidCents: 36_000, feeCents: null, processorFeeCents: 1_515, acquitFeeCents: 4_485 }), null);
+  assert.equal(sumCheck({ heldCents: 42_000, paidCents: 36_000, feeCents: 6_000, processorFeeCents: null, acquitFeeCents: 4_485 }), null);
+  assert.equal(sumCheck({ heldCents: 42_000, paidCents: 36_000, feeCents: 6_000, processorFeeCents: 1_515, acquitFeeCents: null }), null);
 });
 
 test("the three PayPal ids are named, and a fee with no batch says PayPal took it from the capture", () => {
