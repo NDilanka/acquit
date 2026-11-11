@@ -351,6 +351,7 @@
 .record-exam-grade b { font-size: var(--text-section); }
 @media (min-width: 1200px) {
   .owner-workspace > main.wrap:has(> .owner-panel), .owner-loading { display: grid; grid-template-columns: minmax(0,3fr) minmax(0,9fr); gap: var(--space-12); align-items: start; }
+  .owner-panel { padding: var(--space-5); }
   .owner-bridge { grid-template-columns: minmax(0,1fr); min-height: 0; gap: var(--space-4); padding: var(--space-6) 0; }
   .owner-panel:is([data-owner-step="4"],[data-owner-step="5"]) .owner-bridge { min-height: 0; }
   .owner-name { white-space: normal; overflow: visible; }
