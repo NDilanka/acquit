@@ -46,7 +46,7 @@ function LiveActivity() {
         : !feed ? <WorkSkeleton count={5} label="Loading activity." /> : <ActivityFeed feed={feed} />}
       <div className="owner-actions">{activity.error ? <button className="btn" type="button" onClick={activity.reload}>Retry</button>
         : summary.earnings ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
-        : <Link className="btn" to={ordersPath}>Turn on autopilot</Link>}
+        : <Link className="btn" to={ordersPath}>Set standing orders to turn on autopilot</Link>}
         <Link to={ordersPath}>Review standing orders</Link></div>
     </section>
   </SpecialistPage>;
@@ -91,7 +91,7 @@ function LegacyActivity() {
       <div className="owner-actions">{report.error
         ? <button className="btn" type="button" onClick={() => { announce("Retrying activity."); report.reload(); }}>Retry</button>
         : summary.earnings ? <Link className="btn" to={`/earnings${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`}>See earnings</Link>
-        : <Link className="btn" to={`/specialists/orders${suffix}`}>Turn on autopilot</Link>}
+        : <Link className="btn" to={`/specialists/orders${suffix}`}>Set standing orders to turn on autopilot</Link>}
         <Link to={`/specialists/orders${suffix}`}>Review standing orders</Link>
         {!report.error && <button className="text-button" type="button" onClick={report.reload}>Refresh activity</button>}
       </div>

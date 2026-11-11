@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "../router";
 import type { Session } from "../session";
 import { PrintDemoPage } from "./PrintDemo";
@@ -11,6 +11,7 @@ export function HowWorkIsCheckedPage({ session, onSignedIn }: { session: Session
   const { announce, agent } = useOwner();
   const [printOpen, setPrintOpen] = useState(false);
   const [methodsOpen, setMethodsOpen] = useState(false);
+  useEffect(() => { announce("How work is checked loaded."); }, [announce]);
   return <article className="checking-page public-owner-page">
     <header className="work-heading"><h1>How work is checked</h1><p className="spec-lead">Checks prove work. They do not release payment.</p></header>
     <div className="checking-split"><section id="code"><p className="checking-label">Code · real checks</p><h2>Frozen terms. Real tests.</h2>

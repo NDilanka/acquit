@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { ApiError } from "../../api.ts";
 import { Link } from "../../router.tsx";
 import { CopyWorkValue } from "./AgentEarnings.tsx";
+import { HOUSE_AGENT_ID } from "./board.ts";
 import { specialists } from "./client.ts";
 import { CheckCells, Seal } from "./ExamRecord.tsx";
 import { useOwner } from "./OwnerPanel.tsx";
@@ -48,17 +49,18 @@ export function AgentRecordPage({ agentId }: { agentId: string }) {
     <Link to="/specialists">Open your workspace</Link></div><div className="owner-actions"><button type="button" className="btn" onClick={read.reload}>Retry</button></div></section>;
   if (!agent || (examId && exam.data === null && exam.error === null)) return <RecordSkeleton />;
   const acquitted = agent.task === "code" && agent.acquitted;
+  const house = agent.id === HOUSE_AGENT_ID;
   return <section className="public-owner-page public-record">
     <header className="work-heading"><h1>{agent.name}</h1><p className="spec-lead">{agentTaskLabel(agent.task)}{agent.ownerHandle && <> · owned by {agent.ownerHandle}</>}</p></header>
     <div className="public-record-split"><section className="public-proof" aria-label="Acquittal record">
-      <div className="public-exam"><div className="public-verdict"><Seal passed={acquitted} /><div><p className="record-key">{acquitted ? "Acquitted" : agent.task !== "code" ? "Exam coming" : "Not acquitted"}</p>
-        <p className="muted">{agent.seeded ? <b>Seeded</b> : agent.simulated ? <b>Simulated</b> : null}{agent.acquittedAt && <>{(agent.seeded || agent.simulated) && " · "}<WorkTime at={agent.acquittedAt} full /></>}</p></div></div>
+      <div className="public-exam"><div className="public-verdict"><Seal passed={acquitted} /><div><p className="record-key">{house ? "House agent." : acquitted ? "Acquitted" : agent.task !== "code" ? "Exam coming" : "Not acquitted"}</p>
+        <p className="muted">{house ? "Run by Acquit; it does not sit the exam." : <>{agent.seeded ? <b>Seeded</b> : agent.simulated ? <b>Simulated</b> : null}{agent.acquittedAt && <>{(agent.seeded || agent.simulated) && " · "}<WorkTime at={agent.acquittedAt} full /></>}</>}</p></div></div>
       {(agent.seeded || counts?.visible || counts?.hidden) && <div className="public-checks">{agent.seeded
         ? <p><b>Exam not sat</b> · placed by Acquit</p> : <>
           {counts?.visible && <CheckCells counts={counts.visible} total={counts.visible.total} hidden={false} />}
           {counts?.hidden && <CheckCells counts={counts.hidden} total={counts.hidden.total} hidden />}
         </>}</div>}</div>
-      <div className="public-score"><div><p className="muted record-grade-label">{agent.grade === null ? "No grade yet" : "Grade"}</p><p className="record-grade">{agent.grade ?? "—"}</p></div>
+      <div className="public-score"><div><p className="muted record-grade-label">{house ? "Exam not sat" : agent.grade === null ? "No grade yet" : "Grade"}</p><p className="record-grade">{agent.grade ?? "—"}</p></div>
         {agent.earnedCents !== undefined && <p>Earned <b>{dollars(agent.earnedCents)} released</b> · PayPal sandbox</p>}
       </div>
     </section><aside className="public-record-facts">

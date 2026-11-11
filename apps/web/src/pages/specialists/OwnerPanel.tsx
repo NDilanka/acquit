@@ -105,7 +105,7 @@ export function AgentPanel({ agent, step, provenance, children, gradeDelta }: {
     <header className="owner-bridge">
       <div className="owner-identity"><p className="owner-name" title={fresh ? undefined : agent?.name}>{fresh ? "New agent" : agent?.name ?? "No agent plugged in yet"}</p>
         {agent && !fresh && <div className="owner-identity-meta"><p className="owner-task">{agentTaskLabel(agent.task)}</p>
-          {coming ? <p className="owner-verdict">Exam coming</p> : <p className="owner-verdict">{agent.acquitted ? "Acquitted" : "Not acquitted"}
+          {coming ? <p className="owner-verdict">Exam coming</p> : <p className="owner-verdict">{agent.seeded && step === 2 ? "Seeded agent" : agent.acquitted ? "Acquitted" : "Not acquitted"}
             {step !== 2 && agent.acquitted && agent.simulated && <> · <span className="owner-honesty">{SIMULATED_WORD}</span></>}</p>}</div>}</div>
       {!fresh && agent && !coming && <div className="owner-grade"><span>{agent.grade === null ? "No grade yet" : "Grade"}</span><strong key={agent.grade}>{agent.grade ?? "—"}</strong>
         {(step === 4 || step === 5) && <span className="owner-delta">{gradeDelta === undefined ? null : gradeDelta ? `${gradeChangeWords(gradeDelta)} in this report` : "No change in this report"}</span>}</div>}

@@ -16,3 +16,29 @@ test("unavailable exams announce coming rather than readiness", () => {
   const source = readFileSync(new URL("./Exam.tsx", import.meta.url), "utf8");
   assert.match(source, /announce\(!available \? "Exam coming\."/);
 });
+
+test("House Record copy uses the projected House ID while ordinary exam labels stay unchanged", () => {
+  const record = readFileSync(new URL("./AgentRecord.tsx",import.meta.url),"utf8");
+  const board = readFileSync(new URL("./board.ts",import.meta.url),"utf8");
+  assert.match(board,/HOUSE_AGENT_ID = "house-ts-fixer"/);
+  assert.match(record,/const house = agent\.id === HOUSE_AGENT_ID;/);
+  assert.match(record,/house \? "House agent\." : acquitted \? "Acquitted" : agent\.task !== "code" \? "Exam coming" : "Not acquitted"/);
+  assert.match(record,/house \? "Run by Acquit; it does not sit the exam\." :/);
+  assert.match(record,/house \? "Exam not sat" : agent\.grade === null \? "No grade yet" : "Grade"/);
+});
+
+test("the dedicated House Leaderboard row says House agent instead of Not ranked", () => {
+  const board = readFileSync(new URL("./Leaderboard.tsx",import.meta.url),"utf8");
+  assert.match(board,/specialists\.agent\(HOUSE_AGENT_ID\)/);
+  assert.match(board,/rows\.house \? `Rank \$\{rows\.house\.rank\}` : "House agent"/);
+  assert.doesNotMatch(board,/"Not ranked"/);
+});
+
+test("a seeded Exam states that no exam was sat instead of pairing Acquitted with a missing record", () => {
+  const exam = readFileSync(new URL("./Exam.tsx",import.meta.url),"utf8");
+  const panel = readFileSync(new URL("./OwnerPanel.tsx",import.meta.url),"utf8");
+  assert.match(exam,/<h1>\{agent\.seeded \? "Seeded agent" : "No stored exam record"\}<\/h1>/);
+  assert.match(exam,/<p>\{agent\.seeded \? "Seeded agent\. It did not sit an exam\." : "Acquitted, but no stored exam is available\. An example is not this agent’s record\."\}<\/p>/);
+  assert.match(exam,/agent\.seeded \? "Seeded agent\. It did not sit an exam\." : "Ready to take the exam\."/);
+  assert.match(panel,/agent\.seeded && step === 2 \? "Seeded agent" : agent\.acquitted \? "Acquitted" : "Not acquitted"/);
+});
