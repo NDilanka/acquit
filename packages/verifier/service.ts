@@ -324,20 +324,25 @@ function parseDefinitionOfDone(value: unknown): DefinitionOfDone | null {
 	const number = typeof value.issue.number === "number" && Number.isSafeInteger(value.issue.number) && value.issue.number > 0 ? value.issue.number : null;
 	const title = boundedText(value.issue.title, 300);
 	const frozenAt = idOf(value.frozenAt, /^[0-9a-f]{7,64}$/);
-	// The frozen test path is inside the fixture repository: relative, bounded, no escaping.
-	const frozenTestPath = typeof value.frozenTestPath === "string" && value.frozenTestPath.length > 0 && value.frozenTestPath.length <= 300
-		&& !value.frozenTestPath.startsWith("/") && !value.frozenTestPath.split("/").includes("..") ? value.frozenTestPath : null;
+	// A code definition has no physical key, so its parsed shape is unchanged.
+	const physical = value.physical === undefined ? undefined : parsePhysical(value.physical);
+	// A code definition names its frozen test file. A physical definition freezes no test, so its path is empty.
+	const frozenTestPath = physical === undefined ? frozenTestPathOf(value.frozenTestPath) : value.frozenTestPath === "" ? "" : null;
 	const frozenTests = testIds(value.frozenTests);
 	const hiddenTests = testIds(value.hiddenTests);
 	const hiddenManifest = idOf(value.hiddenManifest, /^[0-9a-f]{64}$/);
 	const protectedPaths = globList(value.protectedPaths);
-	// A code definition has no physical key, so its parsed shape is unchanged.
-	const physical = value.physical === undefined ? undefined : parsePhysical(value.physical);
 	if (repository === null || number === null || title === null || frozenAt === null || frozenTestPath === null || frozenTests === null
 		|| hiddenTests === null || hiddenManifest === null || protectedPaths === null || physical === null) return null;
+	if (physical !== undefined && (frozenTests.length > 0 || hiddenTests.length > 0)) return null;
 	return { issue: { repository, number, title }, frozenAt: frozenAt as CommitSha, frozenTestPath, frozenTests: frozenTests as readonly TestId[],
 		hiddenManifest: hiddenManifest as Digest, hiddenTests: hiddenTests as readonly TestId[], protectedPaths: protectedPaths as unknown as DefinitionOfDone["protectedPaths"],
 		...(physical === undefined ? {} : { physical }) };
+}
+
+/** A code definition's frozen test file: inside the fixture repository, relative, bounded, no escaping. */
+function frozenTestPathOf(value: unknown): string | null {
+	return typeof value === "string" && value.length > 0 && value.length <= 300 && !value.startsWith("/") && !value.split("/").includes("..") ? value : null;
 }
 
 function parsePhysical(value: unknown): PhysicalDefinition | null {

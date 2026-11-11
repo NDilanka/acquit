@@ -2,12 +2,16 @@
 // its verdict by name. The sealed coordinates never appear in a verdict.
 
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { runJudge } from "../../verifier/judge.ts";
-import type { JudgeDeps, JudgeOutcome, PhysicalJudgeDeps } from "../../verifier/judge.ts";
+import type { JudgeDeps, JudgeOutcome, JudgeSource, PhysicalJudgeDeps } from "../../verifier/judge.ts";
+import { createVerifierService } from "../../verifier/service.ts";
+import type { VerifierService } from "../../verifier/service.ts";
+import { RUN_NONCE_HEADER, RUN_SIGNATURE_HEADER, RUN_TIMESTAMP_HEADER, runSignature } from "../../verifier/signing.ts";
 import type { SubjectLauncher } from "../../verifier/subject.ts";
 import type { PublisherPort } from "../src/github.ts";
 import { instant, parseJobId } from "../src/ids.ts";
@@ -169,4 +173,56 @@ test("a failed public rule rejects by its rule name", async () => {
 	assert.equal(verdict.result, "REJECTED");
 	if (verdict.result !== "REJECTED") return;
 	assert.deepEqual(verdict.reasons, [{ kind: "SPEC_RULES_FAILED", rules: ["holes"] }]);
+});
+
+const boundarySecret = "run-secret-for-the-physical-boundary";
+
+/** A run request signed the way the API signs one: the same headers over the same bytes the service reads. */
+function signedRun(body: string): Request {
+	const timestamp = String(Math.floor(Date.now() / 1000));
+	const nonce = randomBytes(16).toString("hex");
+	return new Request("http://verifier.test/runs", { method: "POST", headers: { "content-type": "application/json",
+		[RUN_TIMESTAMP_HEADER]: timestamp, [RUN_NONCE_HEADER]: nonce, [RUN_SIGNATURE_HEADER]: `sha256=${runSignature(boundarySecret, timestamp, nonce, body)}` }, body });
+}
+
+/** The verifier service with its physical judge wired to the stub checker, and a source that serves one artefact. */
+function physicalService(artefact: string): VerifierService {
+	const source: JudgeSource = { diff: () => ({ changes: [] }), materialize: () => { throw new Error("a physical run never materializes a tree"); },
+		readFile: () => artefact };
+	return createVerifierService({ runSecret: boundarySecret, fixtures: { source: "", byDigest: new Map() },
+		callback: { url: "http://127.0.0.1:1/callback", secret: "callback-secret-for-the-physical-boundary" },
+		subject: { run: async () => { throw new Error("a physical run never starts a subject"); } } as unknown as SubjectLauncher,
+		publisher: { publishVerified: async () => { throw new Error("a physical run publishes nothing"); } } as unknown as PublisherPort,
+		source: async () => ({ source, remove: () => {} }), physical: { sealedChecks: () => sealed, checkerEntry, checkerDeadlineMs: undefined }, log: () => {} });
+}
+
+test("a physical definition crosses the signed run boundary and is judged, and a code definition with no test path is still refused", async () => {
+	const service = physicalService("good");
+	const body = JSON.stringify({ runId: request.runId, jobId, ordinal: 1, sourceCommit, definitionOfDone });
+	// The parser takes exactly what physicalDefinitionOf() emits: an empty frozen path and empty test lists.
+	const accepted = await service.handle(signedRun(body));
+	assert.equal(accepted.status, 202, await accepted.clone().text());
+	assert.equal(((await accepted.json()) as { accepted: boolean }).accepted, true);
+	await service.whenIdle();
+	const record = service.runs.get(request.runId)!;
+	assert.equal(record.refusal, null);
+	const outcome = record.outcome;
+	assert.equal(outcome?.kind, "VERDICT");
+	if (outcome?.kind !== "VERDICT") return;
+	assert.equal(outcome.verdict.result, "VERIFIED");
+
+	const codeBody = JSON.stringify({ runId: "run_physical_code_refused", jobId, ordinal: 1, sourceCommit,
+		definitionOfDone: { issue: { repository: "maya-client/invoice-app", number: 12, title: "Totals" }, frozenAt: LASER_CUT_WORKFLOW.frozenAt,
+			frozenTestPath: "", frozenTests: [], hiddenTests: [], hiddenManifest: digest, protectedPaths: [] } });
+	const pathed = JSON.stringify({ runId: "run_physical_path_refused", jobId, ordinal: 1, sourceCommit,
+		definitionOfDone: { ...definitionOfDone, frozenTestPath: "tests/totals.test.ts" } });
+	const listed = JSON.stringify({ runId: "run_physical_list_refused", jobId, ordinal: 1, sourceCommit,
+		definitionOfDone: { ...definitionOfDone, frozenTests: ["frozen:1"] } });
+	for (const refused of [codeBody, pathed, listed]) {
+		const answer = await service.handle(signedRun(refused));
+		assert.equal(answer.status, 400);
+		assert.deepEqual(await answer.json(), { error: "RUN_BODY_INVALID" });
+	}
+	assert.equal(service.runs.size, 1);
+	await service.close();
 });
