@@ -31,6 +31,9 @@ import type { OutcomeRegistry } from "./outcome.ts";
 import type { VerifierPort } from "./verifier.ts";
 import type { DefinitionOfDone } from "./verifier.ts";
 import type { PrivateCaseReader } from "./hidden-seal.ts";
+import { physicalDefinitionOf, physicalWorkflowOf } from "./physical.ts";
+import type { SealedCheckSet } from "./physical.ts";
+import type { Vertical } from "./code-manifest.ts";
 import { simulatedDisputeOf } from "./scenario-binding.ts";
 
 type CallbackReport = NonNullable<Awaited<ReturnType<VerifierPort["parseCallback"]>>>;
@@ -227,6 +230,11 @@ export type Ports = {
 	readonly alerts: { raise(effect: Extract<JobEffect, { kind: "ALERT" }>): Promise<void> };
 	/** The private case set the reveal reads when a sealed job closes. Absent means no sealed job reveals. */
 	readonly privateCases?: PrivateCaseReader;
+	/**
+	 * The physical verticals this deployment opens. Absent, a physical OpenJob is refused. The sealed checks are read
+	 * here to open a job and never leave the deployment: a missing or unreadable set refuses the open.
+	 */
+	readonly physical?: { readonly sealed: (vertical: Vertical) => SealedCheckSet | null };
 	readonly clock: { now(): Instant };
 };
 
@@ -282,7 +290,18 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		let loaded: Loaded = { kind: "NONE" };
 		// What the table applies: the command as sent, except a House accept that named no bid, which takes the bid chosen below.
 		let applied: UserCommand = command;
-		if (command.type === "OpenJob") {
+		if (command.type === "OpenJob" && command.vertical !== undefined) {
+			// A physical job opens on the visitor's own account repository, against its fixed public spec. The judge's sealed
+			// checks and its verifier must both be configured, or the open is refused before any row is written.
+			const workflow = physicalWorkflowOf(command.vertical);
+			if (workflow === null || actor.role !== "CLIENT" || actor.repository !== command.repository) return { kind: "DENIED", reason: "NOT_FOUND" };
+			if (ports.physical?.sealed(workflow.vertical) == null || ports.verifiers?.[workflow.vertical] === undefined) {
+				return { kind: "DENIED", reason: "PHYSICAL_NOT_CONFIGURED" };
+			}
+			loaded = { kind: "OPEN_JOB", title: workflow.title,
+				contract: { definitionOfDone: physicalDefinitionOf(workflow, command.repository, digest(workflow.publicSpec)),
+					budget: command.budget, deliveryEndsAt: command.deliveryEndsAt, terms: TERMS } };
+		} else if (command.type === "OpenJob") {
 			// A visitor opens jobs on the repository the App forked for it; every other client opens jobs
 			// on a registered fixture repository. Either way the manifest freezes exactly this command's
 			// fixture, keyed by repository and issue, and never a contract compiled into this package.
@@ -344,8 +363,9 @@ export async function executeCommand(ports: Ports, actor: Actor, key: RequestKey
 		if (committed.kind === "CAPPED") return { kind: "DENIED", reason: committed.reason };
 		if (committed.kind !== "COMMITTED") continue;
 		// A starter job is the account's own to win, so the House agent never bids on it, and the House client
-		// takes the fixture's frozen contract as it stands, with no scoping draft to review.
-		if (command.type === "OpenJob" && !isStarterJob(plan.next)) {
+		// takes the fixture's frozen contract as it stands, with no scoping draft to review. A physical job is
+		// won by an agent for its own vertical, so the code House agent never bids on one.
+		if (command.type === "OpenJob" && command.vertical === undefined && !isStarterJob(plan.next)) {
 			await placeHouseBid(ports, plan.next);
 			// The scoping draft starts once the job exists. A fixture without a trusted fix is never
 			// scoped, and a deployment without the port opens exactly as it always did.
@@ -535,13 +555,13 @@ export function verifiersOf(ports: Pick<Ports, "verifier" | "verifiers">): Outco
 }
 
 /**
- * The callback names no vertical, so each registered judge authenticates its own signature. The first
- * authentic report wins, and the key it sits under is the vertical whose judge sent it.
+ * Authenticate before reading the job or trusting the body's optional vertical. A shared secret may
+ * authenticate under several registry keys, so the first matching key does not identify the job's judge.
  */
-async function authenticateCallback(ports: Ports, request: Request): Promise<{ readonly vertical: string; readonly parsed: CallbackReport } | null> {
-	for (const [vertical, judge] of Object.entries(verifiersOf(ports))) {
+async function authenticateCallback(ports: Ports, request: Request): Promise<{ readonly verifier: VerifierPort; readonly parsed: CallbackReport } | null> {
+	for (const judge of Object.values(verifiersOf(ports))) {
 		const parsed = await judge.verifier.parseCallback(request.clone());
-		if (parsed) return { vertical, parsed };
+		if (parsed) return { verifier: judge.verifier, parsed };
 	}
 	return null;
 }
@@ -1008,14 +1028,31 @@ export async function ingestVerifierCallback(ports: Ports, request: Request): Pr
 	// Each judge authenticates the judge's signed report. Submitted-program output never reaches this path.
 	const authentic = await authenticateCallback(ports, request);
 	if (!authentic) return Response.json({ error: "UNAUTHENTICATED" }, { status: 401 });
-	const { vertical, parsed } = authentic;
+	const { verifier, parsed } = authentic;
 	const job = await ports.store.readJob(parsed.jobId);
-	const pending = job?.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" ? job.state.attempts.pending : null;
+	if (job === null) return Response.json({ ok: true, applied: false });
+	const jobVertical = storedVertical(job);
+	// A code job reads a name no physical workflow opens as none, as main did: only a name this build opens can mismatch it.
+	const named = jobVertical === CODE_VERTICAL && parsed.vertical !== undefined && physicalWorkflowOf(parsed.vertical) === null
+		? undefined : parsed.vertical;
+	if (named !== undefined && named !== jobVertical) {
+		return Response.json({ error: "VERTICAL_MISMATCH" }, { status: 409 });
+	}
+	// A legacy body names the code vertical, never an implicit physical workflow.
+	if (named === undefined && jobVertical !== CODE_VERTICAL) return Response.json({ ok: true, applied: false });
+	// The stored job decides the verdict's shape: a physical verdict publishes no pull request, and a code verdict names one.
+	const verified = parsed.report.kind === "VERDICT" && parsed.report.verdict.result === "VERIFIED" ? parsed.report.verdict : null;
+	if (verified !== null && (verified.pullRequest === null) !== (physicalWorkflowOf(jobVertical) !== null)) {
+		return Response.json({ error: "VERDICT_MISMATCH" }, { status: 409 });
+	}
+	const judge = verifiersOf(ports)[jobVertical];
+	// The stored job chooses its judge. A different, independently keyed judge cannot finish it.
+	const judgedBy = judge !== undefined &&
+		(judge.verifier === verifier || await judge.verifier.parseCallback(request.clone()) !== null);
+	const pending = job.state.status === "IN_PROGRESS" && job.state.attempts.phase === "VERIFYING" ? job.state.attempts.pending : null;
 	const report = parsed.report;
 	const runId = report.kind === "VERDICT" ? report.verdict.runId : report.failure.runId;
 	const sourceCommit = report.kind === "VERDICT" ? report.verdict.sourceCommit : report.failure.sourceCommit;
-	// A judge may only finish a job of its own vertical.
-	const judgedBy = job !== null && storedVertical(job) === vertical;
 	const waiting = judgedBy && pending !== null && pending.runId === runId && pending.sourceCommit === sourceCommit;
 	// A report for a run the job is not waiting on records nothing: an early report must not block the real one.
 	if (!waiting) return Response.json({ ok: true, applied: false });
@@ -1055,7 +1092,7 @@ export async function runDueTimers(ports: Ports): Promise<number> {
 		if (result.kind === "COMMITTED") changed++;
 	}
 	for (const row of await ports.store.listJobs()) {
-		if (row.state.status === "OPEN" && !isStarterJob(row) && !row.bids.some(bid => bid.kind === "HOUSE")) await placeHouseBid(ports, row);
+		if (row.state.status === "OPEN" && storedVertical(row) === CODE_VERTICAL && !isStarterJob(row) && !row.bids.some(bid => bid.kind === "HOUSE")) await placeHouseBid(ports, row);
 		if (row.state.status !== "OPEN" || row.state.phase.kind !== "FUNDING") continue;
 		const checkout = row.state.phase.checkout;
 		if (!("orderId" in checkout)) continue;

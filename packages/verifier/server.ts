@@ -8,7 +8,9 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { createGitHubApp, missingGitHubNames } from "../core/src/github.ts";
-import { githubAppEnv, scopingDirResolution, serviceConfig, VerifierConfigError } from "./config.ts";
+import { LASER_VERTICAL } from "../core/src/code-manifest.ts";
+import { sealedChecksIn } from "../core/src/physical.ts";
+import { githubAppEnv, physicalSealedDirEnv, scopingDirResolution, serviceConfig, VerifierConfigError } from "./config.ts";
 import { createRunSource } from "./fetch.ts";
 import { buildFixtureBook, fixtureRegistrySource, loadFixtureRegistry } from "./fixtures.ts";
 import { createVerifierService, BODY_LIMIT_BYTES } from "./service.ts";
@@ -25,9 +27,13 @@ export function createProductionService(): { readonly service: VerifierService; 
 	const github = githubAppEnv();
 	// One client for the publisher and the source's tokens: one boundary, one token cache.
 	const app = createGitHubApp(github);
+	// The laser checker's sealed checks are read from the private directory on every run; the checker runs as a child process.
+	const sealedDir = physicalSealedDirEnv();
+	const physical = { sealedChecks: () => sealedChecksIn(sealedDir, LASER_VERTICAL),
+		checkerEntry: fileURLToPath(new URL("../verifier-laser/src/checker-cli.ts", import.meta.url)) };
 	return { port: config.port, subject: selection.subject,
 		service: createVerifierService({ runSecret: config.runSecret, callback: { url: config.callbackUrl, secret: config.callbackSecret },
-			subject: subjectFor(selection), publisher: app, fixtures: book,
+			subject: subjectFor(selection), publisher: app, fixtures: book, physical,
 			scopingDir: scopingDirResolution(),
 			source: createRunSource({ organization: github.organization ?? "", tokenFor: owner => app.installationToken(owner) }),
 			runDeadlineMs: config.runDeadlineMs, concurrency: config.concurrency }) };

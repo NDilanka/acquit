@@ -101,7 +101,7 @@ function makeLink(client: string): Promise<string> {
 
 type SaveState = "making" | "ready" | "earlier" | "error";
 
-/** The account link, its Copy button, and Make a new link. Copying marks the link saved in this browser. */
+/** Copying or explicitly confirming marks the account link saved in this browser. */
 export function SaveAccountModal({
   account,
   onClose,
@@ -173,9 +173,13 @@ export function SaveAccountModal({
         title={SAVE_COPY.title}
         onClose={onClose}
         actions={
-          <button type="button" className="btn green" onClick={onClose}>
-            Done
-          </button>
+          <>
+            <button type="button" className="btn ghost" onClick={onClose}>Close</button>
+            <button type="button" className="btn green" disabled={(state !== "ready" && state !== "earlier") || renewing}
+              onClick={() => { saved(); onClose(); }}>
+              I have saved it
+            </button>
+          </>
         }
       >
         <div className="save-account">
@@ -192,7 +196,6 @@ export function SaveAccountModal({
           <div className="alert warn">{SAVE_COPY.warning}</div>
           <div className="save-actions">
             {state === "ready" && link && <a className="btn secondary sm" href={link} target="_blank" rel="noreferrer" onClick={saved}>Open your account link</a>}
-            {state === "earlier" && <button type="button" className="btn secondary sm" onClick={() => { saved(); onClose(); }}>I saved my link</button>}
             {state === "error" && (
               <button type="button" className="btn secondary sm" onClick={() => setState("making")}>
                 Try again

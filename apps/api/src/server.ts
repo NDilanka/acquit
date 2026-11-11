@@ -26,7 +26,7 @@ import { accountForRecoveryToken, makeRecoveryToken, recoveryLinkMade } from "..
 import { attemptLimiter, RESTORE_ATTEMPTS, RESTORE_WINDOW_MS } from "./attempts.ts";
 import { boundedDetail, VERDICT_REASON_BYTES_MAX, VERDICT_REASONS_MAX } from "../../../packages/core/src/verifier.ts";
 import { createRemoteVerifier } from "../../../packages/verifier/ci.ts";
-import { config, clientRepository, databasePath, demoAllowlist, devEnabled, examGateEnforced, fixtures, fixturesByManifest, githubEnv, platformKey, sampleRunnerEnabled, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
+import { config, clientRepository, databasePath, demoAllowlist, devEnabled, examGateEnforced, fixtures, fixturesByManifest, githubEnv, physicalJobsEnabled, physicalSealedDir, platformKey, sampleRunnerEnabled, scenarioFixtureKey, scopingDir, verifierEnv, webOrigin } from "./config.ts";
 import { demoOpenTo } from "./demo-access.ts";
 import { operatorReceipts, publicReceipt } from "./receipts.ts";
 import { operatorPayouts } from "./payouts.ts";
@@ -42,8 +42,10 @@ import type { FixtureContract } from "../../../packages/core/src/fixtures.ts";
 import { isTask, parseStandingOrders, standingOrdersRefusal } from "../../../packages/core/src/exam.ts";
 import type { ExamRefusal } from "../../../packages/core/src/exam.ts";
 import { CODE_VERTICAL } from "../../../packages/core/src/code-manifest.ts";
+import type { Vertical } from "../../../packages/core/src/code-manifest.ts";
+import { physicalWorkflowOf, sealedChecksIn } from "../../../packages/core/src/physical.ts";
 import type { Agent } from "../../../packages/core/src/operator.ts";
-import { acquittalJson, agentListJson, examJson, examRunById, jobRowsNaming, jobRowsOfTenant, latestExamRun, listAgentRows, moneyHeldOf, morningReport, operatorHasJob, plugSample, publicAgentViewJson, publicFloorJson, readAgentRow, sampleCatalog, standingOrdersOf, startExam, startJson, writeStandingOrders } from "./specialists.ts";
+import { acquittalJson, agentListJson, examJson, examRunById, jobRowsNaming, jobRowsOfTenant, laserExamFor, latestExamRun, listAgentRows, moneyHeldOf, morningReport, operatorHasJob, plugSample, publicAgentViewJson, publicFloorJson, readAgentRow, sampleCatalog, standingOrdersOf, startExam, startJson, writeStandingOrders } from "./specialists.ts";
 import { issueBodyFetcher, scopeDraftModel, scopeDraftTurn, scopingKick, scopingPhaseRunner } from "./scoping.ts";
 import { boundedRuns } from "../../../packages/core/src/scenarios.ts";
 import { keptSummary, sweepScenarioRuns } from "../../../packages/core/src/sweep.ts";
@@ -133,7 +135,10 @@ const privateCases: PrivateCaseReader = jobId => {
 		return { candidates: file.cases, salt: file.salt ?? null };
 	} catch { return null; }
 };
-const acquit = createAcquit({ ...settings, clientRepository, scopeDraft, privateCases });
+// The physical verticals open only with ACQUIT_PHYSICAL_JOBS=1. The sealed checks are read from the private directory per open,
+// never cached in the repository or the browser. Off, the config carries no physical port and a physical OpenJob is refused.
+const physical = physicalJobsEnabled ? { sealed: (vertical: Vertical) => sealedChecksIn(physicalSealedDir, vertical) } : undefined;
+const acquit = createAcquit({ ...settings, clientRepository, scopeDraft, privateCases, physical });
 // The API's own connection to the lane, opened the one way this codebase opens one: the busy timeout
 // and the journal mode come with it, so a second worker's write waits for the lock instead of failing
 // the request that carries it.
@@ -512,10 +517,17 @@ function openBudget(value: unknown): UsdCents {
 	}
 	return integer(value, "budget") as UsdCents;
 }
+/** A physical vertical a visitor may open, named by its workflow. Refused by name for any other vertical. */
+function physicalVerticalOf(value: unknown): Vertical {
+	const workflow = physicalWorkflowOf(text(value, "vertical", 20));
+	if (workflow === null) throw new BadBody("Vertical must be a physical workflow");
+	return workflow.vertical;
+}
 function parseCommand(value: unknown): UserCommand {
 	const command = object(value);
 	const keys: Record<string, readonly string[]> = {
-		OpenJob: ["type", "repository", "issueNumber", "budget", "deliveryEndsAt"],
+		// `vertical` is accepted only with physical jobs on. Off, the field is refused like any other unknown field.
+		OpenJob: ["type", "repository", "issueNumber", "budget", "deliveryEndsAt", ...(physicalJobsEnabled ? ["vertical"] : [])],
 		PlaceBid: ["type", "jobId", "price", "eta", "agent", "pitch"],
 		AcceptBid: ["type", "jobId", "bidId"], CancelJob: ["type", "jobId"],
 		Submit: ["type", "jobId", "sourceCommit"],
@@ -528,7 +540,8 @@ function parseCommand(value: unknown): UserCommand {
 	switch (command.type) {
 		case "OpenJob": return { type: "OpenJob", repository: text(command.repository, "repository"),
 			issueNumber: integer(command.issueNumber, "issue number"), budget: openBudget(command.budget),
-			deliveryEndsAt: instant(text(command.deliveryEndsAt, "deadline")) };
+			deliveryEndsAt: instant(text(command.deliveryEndsAt, "deadline")),
+			...(command.vertical === undefined ? {} : { vertical: physicalVerticalOf(command.vertical) }) };
 		case "PlaceBid": return { type: "PlaceBid", jobId: parseJobId(text(command.jobId, "job id")),
 			price: integer(command.price, "price") as UsdCents, eta: hours(integer(command.eta, "ETA", 336)),
 			agent: text(command.agent, "agent", 80) as AgentId, pitch: text(command.pitch, "pitch", 2000) };
@@ -1398,7 +1411,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const owned = agentId === null ? null : readAgentRow(db, agentId);
 		if (owned === null || current.actor.role !== "OPERATOR" || owned.owner !== current.actor.operatorId) { json(res, 404, { error: "NOT_FOUND" }); return; }
 		if (method === "POST") {
-			const started = startExam(db, owned, `exam_${randomUUID()}`, clock.now());
+			const started = startExam(db, owned, `exam_${randomUUID()}`, clock.now(), laserExamFor(physicalJobsEnabled, physicalSealedDir));
 			if (started.ok) { json(res, 202, { exam: startJson(started.run) }); return; }
 			if (started.error === "NOT_FOUND") { json(res, 404, { error: "NOT_FOUND" }); return; }
 			if (started.error === "EXAM_NOT_BUILT") { json(res, 503, { error: "EXAM_NOT_BUILT", detail: "This task has no exam in this build." }); return; }

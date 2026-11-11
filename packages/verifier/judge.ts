@@ -9,16 +9,21 @@ import { join, relative } from "node:path";
 import { performance } from "node:perf_hooks";
 import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Instant, TestId } from "../core/src/ids.ts";
-import { decideVerdict, isSourcePath, judgeHidden, MAX_ADDED_TEXT_PATHS, MAX_DIFF_CHANGES, parseSubjectTranscript, rejectReasons, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
-import type { DiffChange, DiffSummary, FrozenRun, HiddenCase, RejectReason, RunFailureName, SubjectCall, Verdict, VerifierRunRequest } from "../core/src/verifier.ts";
+import { decidePhysicalVerdict, decideVerdict, isSourcePath, judgeHidden, MAX_ADDED_TEXT_PATHS, MAX_DIFF_CHANGES, parseSubjectTranscript, rejectReasons, screenDiff, toSubjectCall, VerifierPublishMissing } from "../core/src/verifier.ts";
+import type { DiffChange, DiffSummary, FrozenRun, HiddenCase, PhysicalDefinition, RejectReason, RunFailureName, SubjectCall, Verdict, VerifierRunRequest } from "../core/src/verifier.ts";
+import { LASER_PUBLIC_RULES, independentChecksOf } from "../core/src/physical.ts";
+import type { SealedCheckSet } from "../core/src/physical.ts";
+import { LASER_VERTICAL } from "../core/src/code-manifest.ts";
 import type { PublisherPort } from "../core/src/github.ts";
 import type { FixtureBook, FixtureBookEntry } from "./fixtures.ts";
+import { runChecker } from "./physical-check.ts";
 import type { SubjectLauncher, SubjectRun } from "./subject.ts";
 
 /** Read-only access to the two commits a run compares: the frozen tree and the submitted one. */
 export interface JudgeSource {
 	diff(frozenAt: CommitSha, sourceCommit: CommitSha): DiffSummary;
-	readFile(commit: CommitSha, path: string): string;
+	/** A physical delivery is read as "regular": a link or a submodule is refused by name. A code job's file is read as git shows it. */
+	readFile(commit: CommitSha, path: string, entry?: "regular"): string;
 	/**
 	 * Extracts a commit into a fresh tree, opened to the subject's uid. A tree that holds a link is
 	 * returned un-opened, with the first link named, so the judge refuses the run before anything
@@ -26,6 +31,9 @@ export interface JudgeSource {
 	 */
 	materialize(commit: CommitSha): { readonly path: string; readonly link: string | null; readonly remove: () => void };
 }
+
+/** Tree modes of a regular file. A symlink (120000) or a submodule (160000) is never read as file bytes. */
+const REGULAR_FILE_MODES = new Set(["100644", "100755"]);
 
 export function gitSource(repoDir: string): JudgeSource {
 	const run = (args: readonly string[], encoding: "utf8" | "buffer"): string | Buffer => {
@@ -54,7 +62,16 @@ export function gitSource(repoDir: string): JudgeSource {
 				return patch.split("\n").filter(line => line.startsWith("+") && !line.startsWith("+++")).map(line => line.slice(1)).join("\n");
 			}
 		},
-		readFile: (commit, path) => run(["show", `${commit}:${path}`], "utf8") as string,
+		readFile(commit, path, kind) {
+			// A physical delivery reads only a regular file. The tree entry decides before anything is read: a link's target text or
+			// a submodule's commit is never the file's bytes. Every other entry, and a missing one, is refused by name.
+			if (kind === "regular") {
+				const entry = (run(["ls-tree", "-z", commit, "--", path], "utf8") as string).split("\0")
+					.find(line => line.slice(line.indexOf("\t") + 1) === path);
+				if (entry === undefined || !REGULAR_FILE_MODES.has(entry.split(" ")[0])) throw new Error(`${path} is not a regular file at ${commit}`);
+			}
+			return run(["show", `${commit}:${path}`], "utf8") as string;
+		},
 		materialize(commit) {
 			const path = join(tmpdir(), `acquit-tree-${commit.slice(0, 12)}-${process.pid}-${Date.now()}`);
 			try {
@@ -142,13 +159,27 @@ export type JudgeDeps = {
 	readonly fixtures: FixtureBook;
 	readonly clock?: { now(): Instant };
 	readonly deadlineMs?: number;
+	/** A physical job's checks. Absent, a physical run is refused by name: nothing is judged without its sealed checks. */
+	readonly physical?: PhysicalJudgeDeps;
 };
+
+export type PhysicalJudgeDeps = {
+	/** The laser workflow's sealed checks, or null when the deployment holds none. Read again for every run. */
+	readonly sealedChecks: () => SealedCheckSet | null;
+	/** The checker's entry file, run by Node as a child process with a reduced environment. */
+	readonly checkerEntry: string;
+	readonly checkerDeadlineMs?: number;
+};
+
+/** The largest delivery the judge reads. A drawing past it is refused by name before the checker runs. */
+const MAX_DELIVERY_BYTES = 1_000_000;
 
 /** Runs one attempt. A clean screen and clean tallies publish a pull request; nothing else does. */
 export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Promise<JudgeOutcome> {
 	const started = performance.now();
 	const clock = deps.clock ?? { now: () => instant(new Date().toISOString()) };
 	const done = request.definitionOfDone;
+	if (done.physical !== undefined) return await runPhysicalJudge(request, deps, done.physical);
 	// The manifest names its own case set by digest. A job whose frozen digest is not one this
 	// deployment holds — or whose ids drifted from the file it froze — is refused before anything runs.
 	const fixture: FixtureBookEntry | undefined = deps.fixtures.byDigest.get(done.hiddenManifest);
@@ -244,6 +275,44 @@ export async function runJudge(request: VerifierRunRequest, deps: JudgeDeps): Pr
 	}
 }
 
+/** The counts of a run that screened out before any check ran. Their verdict carries no tallies. */
+const NO_FINDINGS = { rules: { expected: 0, passed: 0 }, failedRules: [] as readonly string[], sealed: { expected: 0, passed: 0 } };
+
+/**
+ * A physical run. Nothing is frozen or hidden in a repository: the delivery is read at its fixed path, the checker child runs
+ * the public spec and the sealed checks, and the counts decide. A physical run publishes no pull request.
+ */
+async function runPhysicalJudge(request: VerifierRunRequest, deps: JudgeDeps, physical: PhysicalDefinition): Promise<JudgeOutcome> {
+	const started = performance.now();
+	const clock = deps.clock ?? { now: () => instant(new Date().toISOString()) };
+	const judge = deps.physical;
+	if (judge === undefined) return { kind: "RUN_FAILED", failure: contractMismatch("PHYSICAL_NOT_CONFIGURED"), timings: timingsOf(started, {}) };
+	if (physical.workflow !== LASER_VERTICAL) return { kind: "RUN_FAILED", failure: contractMismatch("PHYSICAL_WORKFLOW_UNKNOWN", physical.workflow), timings: timingsOf(started, {}) };
+	const sealed = judge.sealedChecks();
+	if (sealed === null) return { kind: "RUN_FAILED", failure: contractMismatch("SEALED_CHECKS_UNAVAILABLE"), timings: timingsOf(started, {}) };
+	const checks = independentChecksOf(sealed);
+	const screened = (reason: RejectReason): JudgeOutcome => ({ kind: "VERDICT",
+		verdict: decidePhysicalVerdict(request, [reason], NO_FINDINGS, clock.now()), subject: null, timings: timingsOf(started, {}) });
+	let artefact: string;
+	try {
+		artefact = deps.source.readFile(request.sourceCommit, physical.deliveryPath, "regular");
+	} catch {
+		return screened({ kind: "DELIVERY_MISSING", path: physical.deliveryPath });
+	}
+	if (Buffer.byteLength(artefact) > MAX_DELIVERY_BYTES) return screened({ kind: "CHECK_FAILED", detail: "DELIVERY_TOO_LARGE" });
+	const checkStart = performance.now();
+	const run = await runChecker(judge.checkerEntry, { spec: physical.publicSpec, artefact, checks }, LASER_PUBLIC_RULES, judge.checkerDeadlineMs);
+	const subjectMs = performance.now() - checkStart;
+	// A checker that refuses the file at parse has judged it: the parse rule failed, and nothing else was checked.
+	if (run.kind === "refused") return screened({ kind: "SPEC_RULES_FAILED", rules: ["parse"] });
+	if (run.kind === "fault") return screened({ kind: "CHECK_FAILED", detail: run.detail });
+	const rules = { expected: LASER_PUBLIC_RULES.length, passed: run.rules.filter(Boolean).length };
+	const failedRules = LASER_PUBLIC_RULES.filter((_, index) => !run.rules[index]);
+	const sealedTally = { expected: checks.length, passed: run.checks.filter(Boolean).length };
+	return { kind: "VERDICT", verdict: decidePhysicalVerdict(request, [], { rules, failedRules, sealed: sealedTally }, clock.now()),
+		subject: null, timings: timingsOf(started, { subjectMs }) };
+}
+
 function message(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -291,7 +360,8 @@ function timingsOf(started: number, parts: Partial<JudgeTimings>): JudgeTimings 
 
 /** The one-line report the CLI and the evidence logs read. */
 export function describeVerdict(verdict: Verdict): string {
-	return verdict.result === "VERIFIED"
-		? `VERIFIED | frozen ${verdict.frozen.passed}/${verdict.frozen.expected}; hidden ${verdict.hidden.passed}/${verdict.hidden.expected}; PR #${verdict.pullRequest}`
-		: `REJECTED | ${verdict.reasons.map(reason => reason.kind).join("; ")}`;
+	if (verdict.result !== "VERIFIED") return `REJECTED | ${verdict.reasons.map(reason => reason.kind).join("; ")}`;
+	// A physical job publishes no pull request: its counts are the public rules and the sealed checks.
+	if (verdict.pullRequest === null) return `VERIFIED | rules ${verdict.frozen.passed}/${verdict.frozen.expected}; sealed ${verdict.hidden.passed}/${verdict.hidden.expected}; no pull request`;
+	return `VERIFIED | frozen ${verdict.frozen.passed}/${verdict.frozen.expected}; hidden ${verdict.hidden.passed}/${verdict.hidden.expected}; PR #${verdict.pullRequest}`;
 }

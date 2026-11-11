@@ -1,12 +1,23 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { activityEvents, activityJobHref, activityLanes, activityStateWords, activitySteps, activitySummary, closedMoneyWords, closedReasonWords, MONEY_FLOW_WORDS, paypalCheckWords, releasedWorkHref, runnerAction, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
+import { activityEvents, activityJobHref, activityLanes, activityReleasePending, activityStateWords, activitySteps, activitySummary, closedMoneyWords, closedReasonWords, MONEY_FLOW_WORDS, paypalCheckWords, releasedWorkHref, runnerAction, runnerStatusWords, sampleActivityLabel, tallyWords } from "./liveWork.ts";
 import type { ActivityState, OwnerActivity, ReleaseAuthority } from "./types.ts";
 
 const example = JSON.parse(readFileSync(new URL("./__fixtures__/activity.example.json",import.meta.url),"utf8")) as OwnerActivity;
 const released = example.activity[0]!;
 const held = example.activity[1]!;
+
+test("the verification notice disappears after release and never describes unverified work", () => {
+  for (const state of ["AWAITING_APPROVAL","DISPUTED","RELEASING"] as const) {
+    assert.equal(activityReleasePending({...released,state,release:null}),true);
+    assert.equal(activityReleasePending({...released,state}),false);
+  }
+  assert.equal(activityReleasePending(released),false);
+  assert.equal(activityReleasePending({...released,state:"RELEASED",release:null}),false);
+  assert.equal(activityReleasePending(held),false);
+  assert.equal(activityReleasePending({...held,state:"REFUNDED"}),false);
+});
 
 test("the four-step track uses each stored amount and time without fee arithmetic", () => {
   const job = {...released,bid:{...released.bid!,priceCents:4000},moneyHeld:{...released.moneyHeld!,heldCents:4200},

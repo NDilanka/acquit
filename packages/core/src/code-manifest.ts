@@ -27,3 +27,10 @@ export type PluginManifest = {
 /** The code vertical's manifest. The verifiers page reads this same value, so the page cannot drift from the judge. */
 export const CODE_MANIFEST: PluginManifest = { vertical: CODE_VERTICAL, version: "1.0.0", title: "Code", simulated: false,
 	milestones: [{ id: "verified", title: "Verified pull request", releaseBps: 10_000 }] };
+
+/** The laser-cut vertical: one delivered part, judged by the deployment's real checker against a public spec and sealed checks. */
+export const LASER_VERTICAL = "laser-cut" as Vertical;
+
+/** The laser-cut manifest. A verified part is released with no pull request: the judged delivery commit is the artefact. */
+export const LASER_MANIFEST: PluginManifest = { vertical: LASER_VERTICAL, version: "1.0.0", title: "Laser-cut part", simulated: false,
+	milestones: [{ id: "verified", title: "Verified laser-cut part", releaseBps: 10_000 }] };

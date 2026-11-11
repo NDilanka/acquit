@@ -14,8 +14,8 @@ import { instant } from "../core/src/ids.ts";
 import type { CommitSha, Digest, Instant, JobId, TestId } from "../core/src/ids.ts";
 import type { PublisherPort } from "../core/src/github.ts";
 import { boundedDetail, boundedVerdict } from "../core/src/verifier.ts";
-import type { DefinitionOfDone, RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
-import type { JudgeOutcome, JudgeSource } from "./judge.ts";
+import type { DefinitionOfDone, PhysicalDefinition, RunFailure, RunFailureName, Verdict, VerifierReport, VerifierRunId, VerifierRunRequest } from "../core/src/verifier.ts";
+import type { JudgeOutcome, JudgeSource, PhysicalJudgeDeps } from "./judge.ts";
 import { runJudge } from "./judge.ts";
 import type { FixtureBook } from "./fixtures.ts";
 import { loadScopingBook, withScopingCases } from "./fixtures.ts";
@@ -49,6 +49,8 @@ export type VerifierServiceDeps = {
 	readonly publisher: PublisherPort;
 	/** The deployment's fixtures with their private cases; the run's manifest selects its own. */
 	readonly fixtures: FixtureBook;
+	/** The physical workflows' sealed checks and checker. Absent, a physical run is refused by name. */
+	readonly physical?: PhysicalJudgeDeps;
 	/** The deployment's private scoping store, when it keeps one: every approved draft beside the
 	 * curated fixtures, read per run, so a draft approved after this process booted still resolves. */
 	readonly scopingDir?: string;
@@ -183,7 +185,7 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 			built = await deps.source(record.request);
 			const outcome = await runJudge(record.request, { source: built.source, subject: deps.subject, publisher: deps.publisher,
 				fixtures: withScopingCases(deps.fixtures, deps.scopingDir === undefined ? new Map() : loadScopingBook(deps.scopingDir)),
-				deadlineMs: deps.subjectDeadlineMs });
+				deadlineMs: deps.subjectDeadlineMs, physical: deps.physical });
 			// What the run view and the callback carry is bounded and redacted here, once, for every source.
 			record.outcome = outcome.kind === "VERDICT" ? { ...outcome, verdict: boundedVerdict(outcome.verdict) }
 				: { ...outcome, failure: { ...outcome.failure, detail: boundedDetail(outcome.failure.detail) } };
@@ -212,7 +214,9 @@ export function createVerifierService(deps: VerifierServiceDeps): VerifierServic
 	}
 
 	async function deliver(request: VerifierRunRequest, report: VerifierReport): Promise<CallbackState> {
-		const body = JSON.stringify({ jobId: request.jobId, ordinal: request.ordinal, report });
+		const physical = request.definitionOfDone.physical;
+		const body = JSON.stringify({ jobId: request.jobId, ordinal: request.ordinal, report,
+			...(physical === undefined ? {} : { vertical: physical.workflow }) });
 		const headers = { "content-type": "application/json", "x-acquit-signature": `sha256=${callbackSignature(deps.callback.secret, body)}` };
 		for (let attempt = 1; attempt <= CALLBACK_ATTEMPTS; attempt++) {
 			try {
@@ -320,17 +324,35 @@ function parseDefinitionOfDone(value: unknown): DefinitionOfDone | null {
 	const number = typeof value.issue.number === "number" && Number.isSafeInteger(value.issue.number) && value.issue.number > 0 ? value.issue.number : null;
 	const title = boundedText(value.issue.title, 300);
 	const frozenAt = idOf(value.frozenAt, /^[0-9a-f]{7,64}$/);
-	// The frozen test path is inside the fixture repository: relative, bounded, no escaping.
-	const frozenTestPath = typeof value.frozenTestPath === "string" && value.frozenTestPath.length > 0 && value.frozenTestPath.length <= 300
-		&& !value.frozenTestPath.startsWith("/") && !value.frozenTestPath.split("/").includes("..") ? value.frozenTestPath : null;
+	// Physical metadata this service cannot read is ignored, as main ignored unknown keys. A physical definition still
+	// fails below: it freezes no test, so an unreadable block leaves its path empty and that path is refused.
+	const physical = parsePhysical(value.physical) ?? undefined;
+	// A code definition names its frozen test file. A physical definition freezes no test, so its path is empty.
+	const frozenTestPath = physical === undefined ? frozenTestPathOf(value.frozenTestPath) : value.frozenTestPath === "" ? "" : null;
 	const frozenTests = testIds(value.frozenTests);
 	const hiddenTests = testIds(value.hiddenTests);
 	const hiddenManifest = idOf(value.hiddenManifest, /^[0-9a-f]{64}$/);
 	const protectedPaths = globList(value.protectedPaths);
 	if (repository === null || number === null || title === null || frozenAt === null || frozenTestPath === null || frozenTests === null
 		|| hiddenTests === null || hiddenManifest === null || protectedPaths === null) return null;
+	if (physical !== undefined && (frozenTests.length > 0 || hiddenTests.length > 0)) return null;
 	return { issue: { repository, number, title }, frozenAt: frozenAt as CommitSha, frozenTestPath, frozenTests: frozenTests as readonly TestId[],
-		hiddenManifest: hiddenManifest as Digest, hiddenTests: hiddenTests as readonly TestId[], protectedPaths: protectedPaths as unknown as DefinitionOfDone["protectedPaths"] };
+		hiddenManifest: hiddenManifest as Digest, hiddenTests: hiddenTests as readonly TestId[], protectedPaths: protectedPaths as unknown as DefinitionOfDone["protectedPaths"],
+		...(physical === undefined ? {} : { physical }) };
+}
+
+/** A code definition's frozen test file: inside the fixture repository, relative, bounded, no escaping. */
+function frozenTestPathOf(value: unknown): string | null {
+	return typeof value === "string" && value.length > 0 && value.length <= 300 && !value.startsWith("/") && !value.split("/").includes("..") ? value : null;
+}
+
+function parsePhysical(value: unknown): PhysicalDefinition | null {
+	if (!isRecord(value) || value.workflow !== "laser-cut" || !isRecord(value.publicSpec)) return null;
+	const deliveryPath = typeof value.deliveryPath === "string" && value.deliveryPath.length > 0 && value.deliveryPath.length <= 300
+		&& !value.deliveryPath.startsWith("/") && !value.deliveryPath.split("/").includes("..") ? value.deliveryPath : null;
+	const specDigest = idOf(value.specDigest, /^[0-9a-f]{64}$/);
+	if (deliveryPath === null || specDigest === null) return null;
+	return { workflow: "laser-cut", deliveryPath, publicSpec: value.publicSpec, specDigest: specDigest as Digest };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

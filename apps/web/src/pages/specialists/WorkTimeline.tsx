@@ -17,10 +17,11 @@ export function TimelineMark({ at, title, children, tone = "", index = 0, placeh
   </li>;
 }
 
-export function EventMark({ event, index = 0 }: { event: WorkEvent; index?: number }) {
+export function EventMark({ event, index = 0, releasePending = false }: { event: WorkEvent; index?: number; releasePending?: boolean }) {
   return <TimelineMark at={event.at} index={index} tone={event.kind === "rejected" ? "fail" : ""}
     title={event.jobId ? <Link to={`/jobs/${encodeURIComponent(event.jobId)}`}>{jobLabel(event.jobId)}</Link> : "Workspace activity"}>
     <p className="work-status">{event.status}{event.kind === "bid" && event.status.includes("$") && " · PayPal sandbox"}</p>
+    {event.kind === "verified" && releasePending && <p className="muted">Verified is not paid.</p>}
   </TimelineMark>;
 }
 

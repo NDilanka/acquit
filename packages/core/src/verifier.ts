@@ -40,10 +40,25 @@ export type DefinitionOfDone = {
 	readonly protectedPaths: readonly Glob[];
 	/** Set only by an approved AI-drafted case set. A fixture's curated set never carries one. */
 	readonly sealedHiddenCases?: SealedHiddenCases;
+	/**
+	 * A physical job's delivery. Absent on every code job, so a code definition is unchanged. The sealed
+	 * checks never appear here: the judge reads them from its own private directory.
+	 */
+	readonly physical?: PhysicalDefinition;
 };
 
 /** The salted digest of an approved per-job case set. The salt stays in the job's private scoping file until the job closes. */
 export type SealedHiddenCases = { readonly digest: Digest };
+
+/** The physical block of a definition: one delivery file, checked against a public spec the agent can read. */
+export type PhysicalDefinition = {
+	readonly workflow: "laser-cut";
+	/** The one file the agent delivers, repository-relative. */
+	readonly deliveryPath: string;
+	/** The spec the agent reads. Its canonical JSON digest is specDigest. */
+	readonly publicSpec: unknown;
+	readonly specDigest: Digest;
+};
 
 export type VerifierRunRequest = {
 	readonly runId: VerifierRunId;
@@ -73,7 +88,15 @@ export type RejectReason =
 	 * The diff changes more non-binary source paths than the screen reads added text for. Nothing
 	 * starts: a screen in part is not a screen.
 	 */
-	| { readonly kind: "SOURCE_PATHS_OVER_READ_BOUND"; readonly paths: number; readonly limit: number };
+	| { readonly kind: "SOURCE_PATHS_OVER_READ_BOUND"; readonly paths: number; readonly limit: number }
+	/** A physical delivery is not at its fixed path on the submitted commit. Nothing is checked. */
+	| { readonly kind: "DELIVERY_MISSING"; readonly path: string }
+	/** The physical checker crashed, timed out, or answered something malformed. A plain reason, never a stall. */
+	| { readonly kind: "CHECK_FAILED"; readonly detail: string }
+	/** The delivery breaks these public spec rules, by rule name. The spec is visible to the agent, so the names are too. */
+	| { readonly kind: "SPEC_RULES_FAILED"; readonly rules: readonly string[] }
+	/** The delivery fails this many sealed checks. The checks themselves stay sealed, so only the count is named. */
+	| { readonly kind: "SEALED_CHECKS_FAILED"; readonly failed: number };
 
 /** The only verifier type job.ts sees. */
 export type Verdict =
@@ -83,7 +106,8 @@ export type Verdict =
 		readonly sourceCommit: CommitSha;
 		/** Approval, merge, and the receipt bind to this tree, never to a moving PR head. */
 		readonly mergeCommit: CommitSha;
-		readonly pullRequest: number;
+		/** The pull request the judge published. Null on a physical job, which publishes nothing: its judged commit is the artefact. */
+		readonly pullRequest: number | null;
 		readonly frozen: TestTally;
 		readonly hidden: TestTally;
 		readonly reportDigest: Digest;
@@ -604,6 +628,40 @@ export function decideVerdict(
 		at };
 }
 
+/**
+ * What a physical judge found. `rules` counts the public spec rules the checker ran, and `failedRules` names the ones the
+ * delivery broke. `sealed` counts the sealed checks passed, out of all of them. Nothing else crosses into the verdict.
+ */
+export type PhysicalFindings = {
+	readonly rules: TestTally;
+	readonly failedRules: readonly string[];
+	readonly sealed: TestTally;
+};
+
+/**
+ * Fail closed, as decideVerdict does. A physical job publishes no pull request: the judged commit is the artefact, so
+ * VERIFIED carries a null pullRequest. A screen reason (missing file, checker crash, malformed reply) decides the run alone.
+ */
+export function decidePhysicalVerdict(request: VerifierRunRequest, screen: readonly RejectReason[], findings: PhysicalFindings, at: Instant): Verdict {
+	if (screen.length) {
+		return { result: "REJECTED", runId: request.runId, sourceCommit: request.sourceCommit,
+			reasons: screen as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, tallies: null, at };
+	}
+	const reasons: RejectReason[] = [];
+	if (findings.failedRules.length) reasons.push({ kind: "SPEC_RULES_FAILED", rules: findings.failedRules });
+	const failedSealed = findings.sealed.expected - findings.sealed.passed;
+	if (failedSealed > 0) reasons.push({ kind: "SEALED_CHECKS_FAILED", failed: failedSealed });
+	if (reasons.length) {
+		return { result: "REJECTED", runId: request.runId, sourceCommit: request.sourceCommit,
+			reasons: reasons as [RejectReason, ...RejectReason[]], reasonsTruncated: 0, tallies: { frozen: findings.rules, hidden: findings.sealed }, at };
+	}
+	return { result: "VERIFIED", runId: request.runId, sourceCommit: request.sourceCommit,
+		mergeCommit: request.sourceCommit, pullRequest: null, frozen: findings.rules, hidden: findings.sealed,
+		reportDigest: digestOf({ runId: request.runId, sourceCommit: request.sourceCommit, frozen: findings.rules, hidden: findings.sealed,
+			mergeCommit: request.sourceCommit }),
+		at };
+}
+
 function digestOf(value: unknown): Digest {
 	const canonical = (input: unknown): string => Array.isArray(input) ? `[${input.map(canonical).join(",")}]`
 		: input && typeof input === "object" ? `{${Object.entries(input).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`
@@ -634,6 +692,14 @@ export function describeRejectReason(reason: RejectReason): string {
 			return `The submitted tree changes ${reason.paths} paths, over the ${reason.limit}-path screen limit`;
 		case "SOURCE_PATHS_OVER_READ_BOUND":
 			return `The submitted tree changes ${reason.paths} source paths, over the ${reason.limit}-source-path read bound`;
+		case "DELIVERY_MISSING":
+			return `The delivery file ${reason.path} is not on the submitted commit`;
+		case "CHECK_FAILED":
+			return `The delivery could not be checked: ${reason.detail}`;
+		case "SPEC_RULES_FAILED":
+			return `The delivery breaks spec rules: ${reason.rules.join(", ")}`;
+		case "SEALED_CHECKS_FAILED":
+			return `The delivery fails ${reason.failed} sealed ${reason.failed === 1 ? "check" : "checks"}`;
 	}
 }
 
@@ -651,7 +717,8 @@ export interface VerifierPort {
 	/** Starting the same runId twice reuses the first run. CI retries its own infrastructure within the run budget. */
 	start(request: VerifierRunRequest): Promise<void>;
 	/** Authenticates the judge's signed report. Submitted-program output is never a trusted input here. */
-	parseCallback(request: Request): Promise<{ readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly report: VerifierReport } | null>;
+	/** `vertical` is set only by a signed body that names one (a physical judge). Absent, the body is a code report. */
+	parseCallback(request: Request): Promise<{ readonly jobId: JobId; readonly ordinal: 1 | 2 | 3; readonly report: VerifierReport; readonly vertical?: string } | null>;
 }
 
 export class VerifierCiNotConfigured extends Error {

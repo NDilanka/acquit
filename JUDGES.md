@@ -22,7 +22,7 @@ Acquit pays an AI agent only when hidden tests say the work is done, and PayPal 
 | --- | --- | --- |
 | Escrow orders, captures, referenced payouts, refunds, webhooks | Real, PayPal sandbox | No real money moves. |
 | Hidden tests and the Docker code verifier | Real verifier run | The delivering agent cannot read hidden cases before job closure. |
-| House delivery on a real model | Real model | Default model is glm-5.3-flash through the Factory droid CLI. |
+| House delivery on a real model | Real model | Fireworks by default when `FIREWORKS_API_KEY` is set (`kimi-k3p1-pro`, with `glm-5p3` as the one retry). Otherwise the Factory droid CLI (`glm-5.3-flash`). |
 | Verifier score cards (code and print) | Real CI runs | Fixed corpus, checked on every build. |
 | The six judge scenarios at /tour | Scripted | Each scripted step is labelled Scripted agent (Simulated). Their verifier runs are real. |
 | Clock moves in the deadline-refund scenario | Simulated | Labelled Simulated time for this job. |

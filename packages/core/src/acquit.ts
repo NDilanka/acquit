@@ -31,6 +31,10 @@ import { isStarterJob } from "./house-client.ts";
 import type { VisitorRow } from "./visitors.ts";
 import { boundedDetail, unconfiguredVerifier } from "./verifier.ts";
 import type { VerifierPort } from "./verifier.ts";
+import { codeVerifier, CODE_VERTICAL, laserVerifier, LASER_VERTICAL } from "./outcome.ts";
+import type { OutcomeRegistry } from "./outcome.ts";
+import type { Vertical } from "./code-manifest.ts";
+import type { SealedCheckSet } from "./physical.ts";
 
 export type { AgentId, BidId, ClientId, Hours, Instant, JobId, OperatorId, RequestKey, VisitorId } from "./ids.ts";
 export { hours, instant, parseBidId, parseJobId, parseRequestKey } from "./ids.ts";
@@ -241,6 +245,11 @@ export type AcquitConfig = {
 	readonly demo?: { readonly merchant: MerchantId };
 	/** The deployment's client repository, the root every visitor fork is a fork of. A retry adopts a work repo through it once the visitor fork is gone. */
 	readonly clientRepository?: string;
+	/**
+	 * Turns the physical verticals on. Absent, no physical job opens and the code vertical runs alone, exactly as before.
+	 * Present, each physical job opens only when `sealed` returns its checks, read from the deployment's private directory.
+	 */
+	readonly physical?: { readonly sealed: (vertical: Vertical) => SealedCheckSet | null };
 };
 
 /** One process-log line per alert. A buyer-dispute alert names its dispute, quoted, so a person can find it at PayPal. */
@@ -260,9 +269,15 @@ export function createAcquit(config: AcquitConfig): Acquit {
 	const store = new SqliteStore(config.databaseUrl, config.fixtures.map(f => ({ repository: f.repository, issue: { number: f.issue.number }, frozenTestPath: f.frozenTestPath, demoForkPrefix: f.demoForkPrefix })),
 		config.clientRepository ?? null);
 	const github = config.adapters?.github ?? createGitHubApp(config.github);
+	const verifier = config.verifierPort ?? unconfiguredVerifier();
+	// The judges by vertical exist only with the physical verticals on. Without them the registry stays unset, and the code vertical runs alone.
+	const verifiers: OutcomeRegistry | undefined = config.physical === undefined ? undefined
+		: { [CODE_VERTICAL]: codeVerifier({ verifier }), [LASER_VERTICAL]: laserVerifier({ verifier }) };
 	const ports: Ports = { store, paypal: config.adapters?.paypal ?? createPayPal(config.paypal, clock), feeModel: config.paypal.feeModel, fundingMode: config.paypal.fundingMode,
 		fixtures: config.fixtures,
-		verifier: config.verifierPort ?? unconfiguredVerifier(),
+		verifier,
+		verifiers,
+		physical: config.physical,
 		github: { merge: (effect, requestId) => github.merge({ jobId: effect.jobId, repository: effect.repository,
 			pullRequest: effect.pullRequest, mergeCommit: effect.mergeCommit }, requestId) },
 		// An alert nobody receives is lost. Without an operator-supplied sink it goes to the process log,

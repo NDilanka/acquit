@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   afterSwitch,
@@ -140,4 +141,14 @@ test("no account sentence uses the old demo words", () => {
   const words = [...START_COPY.points, START_COPY.lead, START_COPY.failed, START_COPY.saved, PRIVATE_COPY.heading, PRIVATE_COPY.line,
     errorText(new ApiError(403, "NOT_VISITOR_JOB")), errorText(new ApiError(403, "CAP_VISITOR_JOBS")), errorText(new ApiError(403, "SEEDED_LOGIN_DISABLED"))];
   for (const sentence of words) assert.doesNotMatch(sentence, /demo|visitor|guest|judge/i, sentence);
+});
+
+test("the save dialog's primary confirms saving before closing; Close makes no saved claim", () => {
+  const source = readFileSync(new URL("./account-ui.tsx",import.meta.url),"utf8");
+  const modal = source.slice(source.indexOf("export function SaveAccountModal"),source.indexOf("export function SignOutDialog"));
+  assert.match(modal,/className="btn green" disabled=\{\(state !== "ready" && state !== "earlier"\) \|\| renewing\}\s+onClick=\{\(\) => \{ saved\(\); onClose\(\); \}\}>\s+I have saved it/);
+  assert.match(modal,/<button type="button" className="btn ghost" onClick=\{onClose\}>Close<\/button>/);
+  assert.match(modal,/const saved = \(\) => \{\s+markLinkSaved\(localStorage, account\.client, true\);\s+onSavedChange\(true\);/);
+  assert.match(modal,/onCopied=\{copied\}/);
+  assert.doesNotMatch(modal,/\bDone\b|I saved my link/);
 });

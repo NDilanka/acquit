@@ -6,11 +6,11 @@
 import type { Instant } from "./ids.ts";
 import { describeRejectReason, isTestTamper } from "./verifier.ts";
 import type { RejectReason, VerifierPort } from "./verifier.ts";
-import { CODE_MANIFEST } from "./code-manifest.ts";
+import { CODE_MANIFEST, LASER_MANIFEST } from "./code-manifest.ts";
 import type { PluginManifest, Vertical } from "./code-manifest.ts";
 
 // The vertical identity and the code manifest live in code-manifest.ts, so the verifiers page can read them without the judge.
-export { CODE_MANIFEST, CODE_VERTICAL } from "./code-manifest.ts";
+export { CODE_MANIFEST, CODE_VERTICAL, LASER_MANIFEST, LASER_VERTICAL } from "./code-manifest.ts";
 export type { Milestone, PluginManifest, Vertical } from "./code-manifest.ts";
 
 /** One milestone's outcome. NEEDS_REVIEW carries advisory flags only: it passes nothing and rejects nothing. */
@@ -38,5 +38,18 @@ export function codeVerifier(ports: { readonly verifier: VerifierPort }): Outcom
 		verifier: ports.verifier,
 		describeReason: describeRejectReason,
 		isFraud: isTestTamper,
+	};
+}
+
+/**
+ * The laser-cut vertical: the same callback port and the same reason wording. A failed sealed check is an honest
+ * verdict, not a tamper, so no reason is a caught cheat here: the checks are kept private, not the delivery itself.
+ */
+export function laserVerifier(ports: { readonly verifier: VerifierPort }): OutcomeVerifierPlugin {
+	return {
+		manifest: LASER_MANIFEST,
+		verifier: ports.verifier,
+		describeReason: describeRejectReason,
+		isFraud: () => false,
 	};
 }
