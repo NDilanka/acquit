@@ -19,7 +19,7 @@ import {
 	type ChangedFile, type DockerPort, type GitRun, type RunnerPlan,
 } from "../../acquit-cli/src/run.ts";
 import { FIREWORKS_DEFAULT_MODEL, FIREWORKS_FALLBACK_MODEL } from "../../acquit-cli/src/operator.ts";
-import { llmKey } from "../../core/src/llm.ts";
+import { LIMIT_BODY, llmKey } from "../../core/src/llm.ts";
 import { classifyDroidRun, DROID_MODEL, droidExecArgv, factoryApiKey, MODEL_PROVIDER_ENV, modelProvider, reserveModelCall } from "../../core/src/model.ts";
 import type { ModelCallLog } from "../../core/src/model.ts";
 import type { Actor } from "../../core/src/acquit.ts";
@@ -381,15 +381,22 @@ function stateFile(jobId: JobId): string {
 
 // ---- the model run -----------------------------------------------------------------------------
 
+/** How much of the result line's own answer the classification reads: the same bound the Ask client reads. */
+const RESULT_TEXT_LIMIT = 4096;
+
 export function classifyModelRun(code: number | null, output: string): HouseRunOutcome {
 	const result = parseClaudeResult(output);
-	const errorStatus = typeof result?.api_error_status === "number" && result.api_error_status >= 400;
+	const statusCode = typeof result?.api_error_status === "number" ? result.api_error_status : null;
+	const errorStatus = statusCode !== null && statusCode >= 400;
 	if (result !== null && (result.is_error === true || errorStatus)) {
-		const status = errorStatus ? ` ${result.api_error_status}` : "";
+		const status = errorStatus ? ` ${statusCode}` : "";
 		// A 429 is the free tier's own rate limit: terminal for the run, never retried, like a
-		// Factory rate or usage limit is on the droid path.
-		const rate = errorStatus && result.api_error_status === 429;
-		return { ok: false, reason: rate ? "RATE_LIMITED" : "PROVIDER_ERROR", detail: `the model answered${status}` };
+		// Factory rate or usage limit is on the droid path. A 402 or 403 is a limit too when the
+		// provider's own answer names one (a credit balance or a usage quota); any other 402 or 403
+		// is a provider error. The answer is read here and never put in the detail.
+		const answer = typeof result.result === "string" ? result.result.slice(0, RESULT_TEXT_LIMIT) : "";
+		const limited = statusCode === 429 || ((statusCode === 402 || statusCode === 403) && LIMIT_BODY.test(answer));
+		return { ok: false, reason: limited ? "RATE_LIMITED" : "PROVIDER_ERROR", detail: `the model answered${status}` };
 	}
 	// The result line itself says the run succeeded, whatever the exit status was.
 	if (result !== null && result.is_error === false) return { ok: true };

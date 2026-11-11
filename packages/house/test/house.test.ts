@@ -642,6 +642,20 @@ test("the model run classification reads the claude result line the M3 run print
 	assert.deepEqual(classifyModelRun(0, "the agent printed nothing parseable\n"), { ok: true }, "exit 0 with no result line defers to the commit step");
 });
 
+test("a credit or usage limit answered as 402 or 403 is terminal, and any other 403 stays a provider error", () => {
+	// The result line carries the provider's own answer. A 402 or 403 is a limit only when that answer says so.
+	const credits = `{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":402,"result":"API Error: 402 insufficient credit balance"}\n`;
+	const usage = `{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":403,"result":"API Error: 403 usage limit reached"}\n`;
+	const forbidden = `{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":403,"result":"API Error: 403 this key may not call this model"}\n`;
+	for (const output of [credits, usage]) {
+		const outcome = classifyModelRun(1, output);
+		assert.equal(outcome.ok === false ? outcome.reason : "ok", "RATE_LIMITED", "a credit or usage limit is terminal, never retried");
+		assert.doesNotMatch(outcome.ok === false ? outcome.detail : "", /insufficient|usage limit/, "the detail names the status, never the provider's text");
+	}
+	const denied = classifyModelRun(1, forbidden);
+	assert.equal(denied.ok === false ? denied.reason : "ok", "PROVIDER_ERROR", "an unrelated 403 is a provider error and gets its one retry");
+});
+
 test("the delivery facts pick exactly the held House jobs with no charged attempt", () => {
 	const deliverable: HouseDeliverableFacts = { status: "IN_PROGRESS", attemptsPhase: "READY", attemptsUsed: 0,
 		lockedToOperator: HOUSE_OPERATOR_ID, frozenAt: target.frozenAt };
