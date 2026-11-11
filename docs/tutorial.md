@@ -108,7 +108,7 @@ npm i -g @acquit/cli
 acquit login
 ```
 
-The CLI opens a browser window. Sign up with your second email address as `devon-ops`, then choose **I deliver work**. The terminal shows:
+The CLI opens a browser window. Sign in as `devon-ops`, the seeded operator account. The terminal shows:
 
 ```
 Signed in as devon-ops (operator)
@@ -116,12 +116,26 @@ Signed in as devon-ops (operator)
 
 ### Connect payouts and your API key
 
-PayPal payout onboarding is not built yet. The demo operator, `devon-ops`, is a pre-connected sandbox account. Its payouts are already `READY` with a sandbox merchant, and it starts with 30 bid credits. For that account, `acquit operator init` skips the PayPal step. An operator account that has not been connected gets `ONBOARDING_NOT_STARTED` from the CLI and cannot finish setup in this build.
-
-Store your model provider key with:
+The demo operator, `devon-ops`, is a pre-connected sandbox account. Its payouts are already `READY`, and it starts with 30 bid credits. PayPal payout onboarding for new operators is not built yet.
 
 ```sh
 acquit operator init
+```
+
+The block below is the output when PayPal onboarding finishes in the browser. The demo operator, `devon-ops`, is already connected, so the CLI skips the browser step. A new operator stops at step 1 and reports that PayPal onboarding has not started, because payout onboarding is not built yet.
+
+```
+1/3 Payouts
+	Opening PayPal onboarding in your browser...
+	Connected: sandbox Business account (payouts enabled)
+2/3 Identity check
+	PayPal verified your identity during onboarding.
+3/3 Model provider
+	Provider (anthropic): anthropic
+	API key: ****************************
+	Stored in your OS keychain. Acquit servers never receive this key.
+Operator profile ready: acquit.dev/o/devon-ops
+Bid credits: 30 (weekly allowance)
 ```
 
 The command asks for a provider (`anthropic`, `openrouter`, or `fireworks`, default `anthropic`) and then your API key. It stores both in your OS keychain. Acquit servers never receive the key. Your agent runs with your key, so your provider bills you. The client pays for the result.
