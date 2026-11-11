@@ -1,0 +1,149 @@
+.inspector { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-3); }
+.insp-intro { max-width: 100ch; margin: 0 0 var(--space-3); }
+
+/* Picker: the featured deliveries, then "More cheats". On a phone it scrolls sideways, with a fade at the edge. */
+.insp-picker-wrap { position: relative; min-width: 0; }
+.insp-picker { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.insp-chip, .insp-more {
+  display: inline-flex; align-items: center; min-height: var(--control-sm); padding: 4px 14px;
+  border: 1px solid var(--line-2); border-radius: var(--r-pill); background: var(--card); color: var(--ink);
+  font: inherit; font-size: var(--text-sm); line-height: var(--leading-sm); cursor: pointer; text-align: left; white-space: nowrap;
+  transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+.insp-chip:hover, .insp-more:hover { background: var(--surface); }
+.insp-chip[aria-pressed="true"] { border-color: var(--primary-line); background: var(--green-bg); color: var(--green-text); font-weight: 600; }
+.insp-more { border-style: dashed; color: var(--muted); }
+.insp-chip:focus-visible, .insp-more:focus-visible, .insp-stage:focus-visible, .insp-rule:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.insp-picker-label { margin-left: var(--space-2); font-size: var(--text-xs); line-height: var(--leading-xs); font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
+
+.insp-about { display: grid; gap: var(--space-1); }
+.insp-blurb { margin: 0; max-width: 130ch; color: var(--ink-2); font-size: var(--text-ui); line-height: var(--leading-ui); }
+.insp-blurb b { color: var(--ink); font-weight: 600; }
+.insp-honest { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin: 0; font-size: var(--text-sm); line-height: var(--leading-sm); color: var(--muted); }
+
+.insp-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, 1fr); gap: var(--space-4); align-items: start; }
+.insp-stage-col { display: grid; gap: var(--space-2); min-width: 0; }
+/* On a wide screen the stage takes what the window leaves, so stage, rules and verdict share one screen. */
+.insp-stage {
+  position: relative; height: clamp(300px, calc(100vh - 524px), 560px); overflow: hidden; border-radius: var(--r-card);
+  background: var(--surface); border: 1px solid var(--line); touch-action: pan-y; cursor: grab;
+}
+.insp-stage-box { position: relative; min-width: 0; }
+/* Room the caption takes at the bottom of the stage; the 3D view frames the part above it. */
+.insp-stage { --stage-inset: 96px; }
+.insp-stage.flat { cursor: default; }
+.insp-stage:active { cursor: grabbing; }
+.insp-canvas, .insp-flat { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.insp-caption {
+  position: absolute; z-index: 1; left: var(--space-3); bottom: var(--space-3); max-width: min(62ch, calc(100% - 24px));
+  padding: 8px 12px; border-radius: var(--r); background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-raised);
+  pointer-events: none;
+}
+.insp-caption p { margin: 0; font-size: var(--text-sm); line-height: var(--leading-sm); color: var(--ink-2); }
+.insp-caption .insp-caption-sub { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--muted); margin-top: 2px; }
+.insp-caption.fail { border-color: var(--red-line); }
+.insp-caption.fail p:first-child { color: var(--red); font-weight: 600; }
+.insp-caption.moment { background: var(--red-bg); border-color: var(--red-line); padding: 10px 14px; max-width: calc(100% - 24px); }
+.insp-caption.moment p:first-child { color: var(--red); font-weight: 600; font-size: var(--text-ui); line-height: var(--leading-ui); }
+.insp-caption.moment .insp-caption-sub { color: var(--ink-2); font-size: var(--text-sm); line-height: var(--leading-sm); margin-top: 4px; }
+.insp-stage-verdict {
+  position: absolute; z-index: 1; top: var(--space-3); left: var(--space-3); margin: 0; padding: 4px 12px; border-radius: var(--r-pill);
+  font-size: var(--text-ui); line-height: var(--leading-ui); font-weight: 600; border: 1px solid; pointer-events: none;
+}
+.insp-stage-verdict.pass { color: var(--green-text); background: var(--green-bg); border-color: var(--green-line); }
+.insp-stage-verdict.fail { color: var(--red); background: var(--red-bg); border-color: var(--red-line); }
+/* The verdict card sits right under the stage on wider screens, so the badge would say the same thing twice. */
+@media (min-width: 641px) { .insp-stage-verdict { display: none; } }
+.insp-note { margin: 0; font-size: var(--text-sm); color: var(--muted); }
+
+.insp-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.insp-scrub { flex: 1 1 160px; min-width: 120px; accent-color: var(--green); height: var(--control-sm); }
+.wrap select.insp-speed { min-height: var(--control-sm); padding: 0 8px; border-radius: var(--r-sm); }
+
+/* The verdict keeps its height while the run plays, so the page does not move when it arrives. */
+.insp-verdict { min-height: 76px; padding: var(--space-3) var(--space-4); border-radius: var(--r-card); border: 1px solid transparent; }
+.insp-verdict.pass { border-color: var(--green-line); background: var(--green-bg); }
+.insp-verdict.fail { border-color: var(--red-line); background: var(--red-bg); }
+.insp-verdict-line { margin: 0; font-size: var(--text-heading); line-height: var(--leading-heading); font-weight: 600; letter-spacing: -0.01em; }
+.insp-verdict.pass .insp-verdict-line { color: var(--green-text); }
+.insp-verdict.fail .insp-verdict-line { color: var(--red); }
+.insp-verdict-detail { margin: 2px 0 0; color: var(--ink-2); font-size: var(--text-sm); line-height: var(--leading-sm); overflow-wrap: anywhere; }
+
+.insp-checks { padding: var(--space-4); margin: 0; }
+.insp-checks-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-2); }
+.insp-h { margin: 0; font-size: var(--text-ui); line-height: var(--leading-ui); font-weight: 600; color: var(--ink); }
+.insp-count { margin: 0; font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+.insp-count.pass { color: var(--green-text); font-weight: 600; font-size: var(--text-sm); }
+.insp-count.fail { color: var(--red); font-weight: 600; font-size: var(--text-sm); }
+.insp-rules { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+.insp-rule {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; column-gap: var(--space-2); align-items: center;
+  padding: 3px 6px; border-radius: var(--r-sm); border: 1px solid transparent; font-size: var(--text-sm); line-height: var(--leading-sm);
+  transition: background var(--duration) var(--ease-out), opacity var(--duration) var(--ease-out);
+}
+.insp-rule.pending { opacity: 0.5; }
+.insp-rule-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+.insp-rule-id { font-family: var(--mono); font-size: 11px; line-height: 16px; color: var(--muted); white-space: nowrap; }
+.insp-rule-desc { display: none; grid-column: 2 / -1; color: var(--ink-2); font-size: var(--text-xs); line-height: var(--leading-xs); padding-bottom: 2px; overflow-wrap: anywhere; }
+.insp-rule:not(.pending):is(:hover, :focus-visible) .insp-rule-desc, .insp-rule.fail .insp-rule-desc { display: block; }
+.insp-rule:not(.pending):hover { background: var(--surface); }
+.insp-rule.fail, .insp-rule.fail:hover { background: var(--red-bg); border-color: var(--red-line); }
+.insp-rule.fail .insp-rule-name, .insp-rule.fail .insp-rule-id, .insp-rule.fail .insp-rule-desc { color: var(--red); }
+.insp-rule.fail .insp-rule-name { font-weight: 600; }
+.insp-mark { width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center; border: 1.5px solid var(--line-2); }
+.insp-mark svg { width: 12px; height: 12px; }
+.insp-mark.pass { color: var(--white); background: var(--green); border-color: var(--green); }
+.insp-mark.fail { color: var(--white); background: var(--red); border-color: var(--red); }
+:root[data-theme="dark"] .insp-mark.fail { color: var(--paper); }
+
+.insp-sealed { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--line); }
+.insp-rule.sealed { grid-template-columns: 24px minmax(0, 1fr) auto; padding: 6px; }
+.insp-rule.sealed.opening { background: var(--surface); }
+.insp-rule.sealed.pass { background: var(--green-bg); border-color: var(--green-line); }
+.insp-rule.sealed.pass .insp-rule-name { color: var(--green-text); font-weight: 600; }
+.insp-rule.sealed.fail .insp-rule-name { font-size: var(--text-ui); }
+.insp-rule-id.insp-demo { font-family: inherit; font-size: var(--text-xs); }
+.insp-envelope { display: inline-grid; place-items: center; width: 24px; height: 20px; color: var(--muted); }
+.insp-envelope svg { width: 24px; height: 20px; overflow: visible; }
+.insp-flap { transform-origin: 12px 7.5px; transition: transform var(--duration-slow) var(--ease-out); }
+.insp-envelope.opening { color: var(--ink-2); }
+.insp-envelope.opening .insp-flap, .insp-envelope.pass .insp-flap, .insp-envelope.fail .insp-flap { transform: scaleY(-1); }
+.insp-envelope.pass { color: var(--green-text); }
+.insp-envelope.fail { color: var(--red); }
+
+.insp-file, .insp-measured { margin: 0; padding: var(--space-5); }
+.insp-file-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: var(--space-4); }
+.insp-file-cols > * { min-width: 0; }
+.insp-file pre {
+  margin: var(--space-3) 0 0; padding: var(--space-3); max-height: 320px; overflow: auto; border-radius: var(--r-sm);
+  background: var(--surface); font-family: var(--mono); font-size: var(--text-xs); line-height: var(--leading-xs); white-space: pre;
+}
+.insp-measured dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--space-3) var(--space-4); margin: var(--space-3) 0 0; }
+.insp-measured dt { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--muted); }
+.insp-measured dd { margin: 2px 0 0; font-size: var(--text-ui); color: var(--ink); }
+
+@media (max-width: 900px) {
+  .insp-grid { grid-template-columns: minmax(0, 1fr); }
+  .insp-stage { height: auto; aspect-ratio: 4 / 3.2; }
+}
+@media (max-width: 640px) {
+  .insp-picker-wrap { margin: 0 -16px; }
+  .insp-picker { flex-wrap: nowrap; overflow-x: auto; scroll-snap-type: x proximity; padding: 0 40px 4px 16px; scrollbar-width: none; }
+  .insp-picker-wrap::after {
+    content: ""; position: absolute; top: 0; right: 0; bottom: 4px; width: 40px; pointer-events: none;
+    background: linear-gradient(to right, transparent, var(--paper));
+  }
+  .insp-chip, .insp-more { flex: 0 0 auto; scroll-snap-align: start; }
+  .insp-verdict-line { font-size: var(--text-section); line-height: var(--leading-section); }
+  /* On a phone the caption sits under the stage so it never covers the part. */
+  .insp-stage { --stage-inset: 0px; }
+  .insp-caption { position: static; max-width: none; margin-top: var(--space-2); padding: 8px 12px; box-shadow: none; }
+  .insp-verdict.waiting { display: none; }
+  .insp-rule-id.insp-demo { grid-column: 2 / -1; white-space: normal; }
+  .insp-caption p { font-size: var(--text-xs); line-height: var(--leading-xs); }
+  .insp-caption.moment p:first-child { font-size: var(--text-ui); line-height: var(--leading-ui); }
+  .insp-caption.moment .insp-caption-sub { font-size: var(--text-xs); line-height: var(--leading-xs); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .insp-rule, .insp-chip, .insp-more, .insp-flap { transition: none; }
+}
