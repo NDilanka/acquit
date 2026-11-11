@@ -272,6 +272,34 @@ test("a visitor's sample agent bids, is accepted, pushes, is verified and is pai
 	assert.doesNotMatch(JSON.stringify(activityFor(db, world, restarted)), /CAPTURE_SAMPLE_1|op_other/, "no capture id or other operator leaves the server");
 });
 
+test("the push starts PayPal's check of the funded job, and a check that fails to start never stops the push", async () => {
+	const db = new DatabaseSync(":memory:");
+	const world = fakeWorld();
+	const started: JobRow[] = [];
+	const runner = createSampleRunner(portsOf(db, world, { paypalCheck: { start: row => { started.push(row); } } }));
+	await runner.kick();
+	world.advance(30_000);
+	world.houseAccepts();
+	await runner.kick();
+	assert.equal(world.pushes.length, 1, "the runner pushes the scripted tree once the job is funded");
+	assert.deepEqual(started.map(row => row.id), [JOB_ID], "the check starts once, for the job that was pushed");
+	assert.equal(started[0]?.state.status, "IN_PROGRESS", "the check sees the job while it is funded");
+	assert.deepEqual(recordOf(db)?.phase, "RAN");
+
+	const brokenDb = new DatabaseSync(":memory:");
+	const brokenWorld = fakeWorld();
+	const brokenRunner = createSampleRunner(portsOf(brokenDb, brokenWorld, {
+		paypalCheck: { start: () => { throw new Error("the check broke"); } },
+	}));
+	await brokenRunner.kick();
+	brokenWorld.advance(30_000);
+	brokenWorld.houseAccepts();
+	await brokenRunner.kick();
+	assert.equal(brokenWorld.pushes.length, 1, "a check that cannot start leaves the push as it was");
+	assert.deepEqual(recordOf(brokenDb)?.phase, "RAN");
+	assert.ok(brokenWorld.logs.some(line => /PayPal check did not start/.test(line)), "the refusal to start is logged");
+});
+
 test("with the flag off, no tick reads, sends or writes, and the status reads OFF", async () => {
 	const db = new DatabaseSync(":memory:");
 	const world = fakeWorld();

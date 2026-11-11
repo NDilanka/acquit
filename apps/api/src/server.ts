@@ -56,6 +56,7 @@ import { traceFigure } from "./figure-trace.ts";
 import { sampleBook, sampleExplain } from "./sample-book.ts";
 import { activityJson, activityLimit } from "./sample-activity.ts";
 import { createSampleRunner, sampleRunJobs } from "./sample-runner.ts";
+import { createPayPalCheck, paypalOrderRead } from "./paypal-check.ts";
 import { labelSampleAnswer, sampleAskToolExecutor, sampleAskToolList, sampleInFlightGate, sampleTurnLimiter, SAMPLE_ALLOWANCE, SAMPLE_CALLER, SAMPLE_TURN_DEADLINE_MS, withDeadline } from "./sample-ask.ts";
 import { FIGURE_IDS, isFigureId } from "../../../packages/core/src/explain.ts";
 import type { FigureId } from "../../../packages/core/src/explain.ts";
@@ -1599,6 +1600,9 @@ const sampleState = join(resolve(databasePath, ".."), "sample-runner");
 mkdirSync(sampleState, { recursive: true, mode: 0o700 });
 const sampleWork = gitWorkPort({ stateRoot: join(sampleState, "checkouts"), workRoot: join(sampleState, "work"), mint: workMint, env: process.env });
 const sampleFixture = scenarioFixtureOf(fixtures, scenarioFixtureKey);
+// PayPal's check of a funded job's order when its agent's work starts. It reads only when the deployment has PayPal
+// credentials, and it records the answer without holding the run.
+const payPalCheck = createPayPalCheck({ db, read: moneyRead === null ? null : paypalOrderRead(reconcileConfig), now: () => clock.now() });
 const sampleRunner = createSampleRunner({
 	db, enabled: sampleRunnerEnabled, now: () => clock.now(),
 	visitors: () => lastingAccounts(db).map(visitor => ({ id: visitor.id, operatorHandle: visitor.operatorHandle, repository: visitor.repository })),
@@ -1613,6 +1617,7 @@ const sampleRunner = createSampleRunner({
 	feeModel: settings.paypal.feeModel,
 	execute: (actor, key, command) => acquit.execute(actor, key, command),
 	workspace: scriptedWorkspace({ work: sampleWork, readJob: id => scenarioStore.readJob(id) }),
+	paypalCheck: payPalCheck,
 });
 const server = createServer((req, res) => {
 	void route(req, res).catch(error => {
