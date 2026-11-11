@@ -6,6 +6,7 @@ import { escrowTotals } from "./studio-data.ts";
 import {
   VERDICT_COLUMN_PRIORITY,
   VERDICT_MIN_WIDTHS,
+  VERDICT_ROW_HEIGHTS,
   attemptWords,
   cardRows,
   fundedConserves,
@@ -21,6 +22,7 @@ import {
   totalsRow,
   verdictRows,
   verdictColumnsForWidth,
+  verdictRowHeight,
   type GroupRow,
 } from "./verdict-grid.ts";
 
@@ -212,7 +214,7 @@ test("every wide column has a floor from VERDICT_MIN_WIDTHS, and every floor bel
 
 test("column thresholds keep the requested priority and drop PayPal ids first", () => {
   assert.deepEqual(VERDICT_COLUMN_PRIORITY, ["job", "status", "passing", "last", "escrow", "paid", "operator", "ids"]);
-  const thresholds = [216, 352, 464, 608, 696, 800, 980, 1168];
+  const thresholds = [216, 352, 464, 608, 696, 816, 996, 1184];
   for (const [index, width] of thresholds.entries()) {
     assert.deepEqual(verdictColumnsForWidth(width), VERDICT_COLUMN_PRIORITY.slice(0, index + 1), `at ${width}px`);
     assert.deepEqual(verdictColumnsForWidth(width - 0.1), VERDICT_COLUMN_PRIORITY.slice(0, index), `below ${width}px`);
@@ -228,7 +230,7 @@ test("every measured body width fits the longest possible priority prefix, inclu
     const next = VERDICT_COLUMN_PRIORITY[columns.length];
     if (next) assert.ok(used + VERDICT_MIN_WIDTHS[next] > width, `${width}px: the next priority cannot fit`);
   }
-  for (const [width, count] of [[624, 4], [696, 5], [720, 5], [800, 6], [858, 6], [880, 6], [888, 6], [980, 7], [1048, 7], [1128, 7], [1168, 8]] as const) {
+  for (const [width, count] of [[624, 4], [696, 5], [720, 5], [800, 5], [816, 6], [858, 6], [880, 6], [888, 6], [980, 6], [996, 7], [1048, 7], [1128, 7], [1168, 7], [1184, 8]] as const) {
     assert.equal(verdictColumnsForWidth(width).length, count, `${width}px body width`);
   }
   for (const width of [0, -1, NaN, Infinity]) assert.deepEqual(verdictColumnsForWidth(width), []);
@@ -249,12 +251,45 @@ test("initial render, resizing Ask, and changed row viewports refit from the gri
 test("the job's two lines fit the row: 18px title, 16px id, and 16px cell padding inside 56px", () => {
   const dashboards = readFileSync(new URL("./studio/dashboards.tsx", import.meta.url), "utf8");
   const css = readFileSync(new URL("./studio/studio.css", import.meta.url), "utf8");
-  const jobHeight = Number(dashboards.match(/const VERDICT_HEIGHT:[^\n]*job: (\d+)/)?.[1]);
-  assert.ok(jobHeight >= 18 + 16 + 16 + 1, "both lines and the border fit");
+  assert.ok(VERDICT_ROW_HEIGHTS.job >= 18 + 16 + 16 + 1, "both lines and the border fit");
   assert.match(css, /\.verdict-grid \.ag-cell \{[^}]*padding: 8px;[^}]*line-height: 18px/);
   assert.match(css, /\.verdict-grid \.verdict-title small \{[^}]*line-height: var\(--leading-xs\)/);
   assert.match(css, /\.verdict-grid \.verdict-title b, \.verdict-grid \.verdict-title small \{[^}]*text-overflow: ellipsis; white-space: nowrap/);
   assert.match(dashboards, /<b title=\{job\.title\}>/);
+});
+
+test("all data and group rows use one height model; footer height is no longer part of Grid's row model", () => {
+  const rows = verdictRows(BOOK, new Set(["job_paid"]));
+  assert.deepEqual(VERDICT_ROW_HEIGHTS, { group: 34, job: 56, attempt: 40 });
+  assert.equal(verdictRowHeight(undefined), 56);
+  for (const row of rows) assert.equal(verdictRowHeight(row), row.kind === "job" ? 56 : row.kind === "group" ? 34 : 40);
+  const six = verdictRows([...BOOK, job({ jobId: "sixth", escrow: "HELD" })], new Set());
+  assert.equal(six.reduce((sum, row) => sum + verdictRowHeight(row), 0), 472, "six collapsed jobs plus four group headers");
+  const dashboards = readFileSync(new URL("./studio/dashboards.tsx", import.meta.url), "utf8");
+  assert.match(dashboards, /getRowHeight=\{\(\{ data \}: RowHeightParams<GridRow>\) => verdictRowHeight\(data\)\}/);
+  assert.match(dashboards, /type GridRow = VerdictRow;/);
+  assert.doesNotMatch(dashboards, /pinnedBottomRowData/);
+});
+
+test("the table scrollport and intrinsic-height totals are non-overlapping flex siblings, including compact canvases", () => {
+  const dashboards = readFileSync(new URL("./studio/dashboards.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("./studio/studio.css", import.meta.url), "utf8");
+  assert.match(dashboards, /<div className="verdict-table">\s*<AgGridReact<GridRow>[\s\S]*?\/>\s*<\/div>\s*<div className="verdict-footer"><TotalsStrip row=\{totals\} \/><\/div>/);
+  assert.match(css, /\.verdict-table \{ flex: 1 1 0; min-width: 0; min-height: 0; \}/);
+  assert.match(css, /\.verdict-footer \{ flex: 0 0 auto;[^}]*border-top:/);
+  assert.match(css, /\.verdict-grid \.verdict-footer \.verdict-totals \{ height: auto; \}/);
+  const compact = css.match(/@container studio-canvas \(max-width: 860px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  assert.match(compact, /\.studio-flow \.verdict-table \{ min-height: 240px; \}/);
+  assert.match(compact, /\.studio-flow \.verdict-grid \.ag-root-wrapper \{ min-height: 240px; \}/);
+  assert.doesNotMatch(css, /\.ag-(?:floating-bottom|body-viewport|grid-viewport|grid-pinned-bottom-rows)\b/);
+});
+
+test("Paid has room for Not recorded, wraps longer values, and theme padding agrees with the column floors", () => {
+  const dashboards = readFileSync(new URL("./studio/dashboards.tsx", import.meta.url), "utf8");
+  assert.equal(VERDICT_MIN_WIDTHS.paid, 120);
+  assert.match(dashboards, /acquitTheme\.withParams\(\{ cellHorizontalPadding: 8 \}\)/);
+  assert.match(dashboards, /theme=\{VERDICT_THEME\}/);
+  assert.match(dashboards, /colId: "paid"[^\n]*minWidth: VERDICT_MIN_WIDTHS\.paid, wrapText: true, autoHeight: true/);
 });
 
 test("the timeline does not suppress horizontal scroll, so a column below its floor scrolls instead of clipping", () => {

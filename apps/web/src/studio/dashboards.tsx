@@ -24,6 +24,7 @@ import {
   totalsRow,
   verdictRows,
   verdictColumnsForWidth,
+  verdictRowHeight,
   type AttemptRow,
   type CardRow,
   type GroupRow,
@@ -281,12 +282,12 @@ const escrowTotal = (key: keyof ReturnType<typeof escrowTotals>, note: string) =
   };
 };
 
-/** A grid row's kind is one of the verdict rows, or the pinned totals. Only a job row has cells; the others span the grid. */
-type GridRow = VerdictRow | TotalsRow;
+/** Only a job row has cells; the other verdict rows span the grid. Totals sit outside its scrollport. */
+type GridRow = VerdictRow;
 
 const jobOf = (row: GridRow | undefined): PlatformJobLedger | null => (row?.kind === "job" ? row.job : null);
 
-const VERDICT_HEIGHT: Record<GridRow["kind"], number> = { group: 34, job: 56, attempt: 40, totals: 44 };
+const VERDICT_THEME = acquitTheme.withParams({ cellHorizontalPadding: 8 });
 
 /** The tenant on a job's second line, shortened the way a job id is; the deployment's own world has no tenant id. */
 const tenantLabel = (tenant: string | null): string => (tenant === null ? "Deployment" : shortId(tenant));
@@ -329,7 +330,7 @@ function IdsCell({ data }: ICellRendererParams<GridRow>) {
 const VERDICT_COLUMNS: ColDef<GridRow>[] = [
   { colId: "job", headerName: "Job", flex: 3, minWidth: VERDICT_MIN_WIDTHS.job, cellRenderer: TitleCell },
   { colId: "status", headerName: "Status", flex: 2, minWidth: VERDICT_MIN_WIDTHS.status, wrapText: true, autoHeight: true, valueGetter: ({ data }) => { const job = jobOf(data); return job ? platformStatusWord(job.status) : ""; } },
-  { colId: "passing", headerName: "Passing tests", minWidth: VERDICT_MIN_WIDTHS.passing, sortable: false, cellRenderer: PassingCell },
+  { colId: "passing", headerName: "Passing tests", minWidth: VERDICT_MIN_WIDTHS.passing, cellClass: "verdict-passing-cell", autoHeight: true, sortable: false, cellRenderer: PassingCell },
   {
     colId: "last",
     headerName: "Last verdict",
@@ -340,7 +341,7 @@ const VERDICT_COLUMNS: ColDef<GridRow>[] = [
     valueGetter: ({ data }) => { const job = jobOf(data); return job ? lastVerdictWords(job) : ""; },
   },
   { colId: "escrow", headerName: "Escrow", minWidth: VERDICT_MIN_WIDTHS.escrow, valueGetter: ({ data }) => { const job = jobOf(data); return job ? escrowWord(job.escrow) : ""; } },
-  { colId: "paid", headerName: "Paid", cellClass: "num", minWidth: VERDICT_MIN_WIDTHS.paid, valueGetter: ({ data }) => { const job = jobOf(data); return job?.paidCents == null ? "Not recorded" : dollars(job.paidCents); } },
+  { colId: "paid", headerName: "Paid", cellClass: "num", minWidth: VERDICT_MIN_WIDTHS.paid, wrapText: true, autoHeight: true, valueGetter: ({ data }) => { const job = jobOf(data); return job?.paidCents == null ? "Not recorded" : dollars(job.paidCents); } },
   { colId: "operator", headerName: "Operator", minWidth: VERDICT_MIN_WIDTHS.operator, valueGetter: ({ data }) => jobOf(data)?.operator?.handle ?? "None yet" },
   { colId: "ids", headerName: "PayPal ids", flex: 2, minWidth: VERDICT_MIN_WIDTHS.ids, sortable: false, cellRenderer: IdsCell },
 ];
@@ -369,7 +370,7 @@ function AttemptLine({ row }: { row: AttemptRow }) {
   );
 }
 
-/** The pinned bottom row: the conservation law in four figures, green when it holds. */
+/** The footer's conservation law in four figures, green when it holds. */
 function TotalsStrip({ row }: { row: TotalsRow }) {
   return (
     <div className="verdict-totals">
@@ -396,12 +397,11 @@ function GroupHead({ row }: { readonly row: GroupRow }) {
   );
 }
 
-/** A full-width row: an escrow group's header, an attempt's detail, or the totals strip. A job row never reaches here. */
+/** A full-width row: an escrow group's header or an attempt's detail. A job row never reaches here. */
 function VerdictFullWidth({ data }: ICellRendererParams<GridRow>) {
   if (!data || data.kind === "job") return null;
   if (data.kind === "group") return <GroupHead row={data} />;
-  if (data.kind === "attempt") return <AttemptLine row={data} />;
-  return <TotalsStrip row={data} />;
+  return <AttemptLine row={data} />;
 }
 
 /** Below this tile width the timeline lists its jobs as cards instead of table rows. */
@@ -482,33 +482,36 @@ function VerdictTimeline() {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const rows = useMemo(() => verdictRows(jobs, expanded), [jobs, expanded]);
   const totals = useMemo(() => totalsRow(jobs), [jobs]);
-  const pinned = useMemo(() => [totals], [totals]);
   const tile = useRef<HTMLDivElement>(null);
   const narrow = useNarrowTile(tile);
   const toggle = (jobId: string) => setExpanded((prev) => toggleExpanded(prev, jobId));
   return (
     <div className="acquit-grid verdict-grid" ref={tile}>
       {narrow ? <VerdictCards rows={cardRows(rows)} totals={totals} onToggle={toggle} /> : (
-        <AgGridReact<GridRow>
-          theme={acquitTheme}
-          rowData={rows as GridRow[]}
-          columnDefs={VERDICT_COLUMNS}
-          defaultColDef={VERDICT_DEFAULTS}
-          onGridSizeChanged={fitVerdictColumns}
-          onFirstDataRendered={fitVerdictColumns}
-          onViewportChanged={fitVerdictColumns}
-          getRowId={({ data }) => data.id}
-          isFullWidthRow={({ rowNode }) => rowNode.data?.kind !== "job"}
-          fullWidthCellRenderer={VerdictFullWidth}
-          getRowHeight={({ data }: RowHeightParams<GridRow>) => (data ? VERDICT_HEIGHT[data.kind] : VERDICT_HEIGHT.job)}
-          pinnedBottomRowData={pinned}
-          onRowClicked={(event: RowClickedEvent<GridRow>) => {
-            const row = event.data;
-            if (row?.kind === "job") toggle(row.job.jobId);
-          }}
-          enableCellTextSelection={false}
-          containerStyle={{ height: "100%" }}
-        />
+        <>
+          <div className="verdict-table">
+            <AgGridReact<GridRow>
+              theme={VERDICT_THEME}
+              rowData={rows as GridRow[]}
+              columnDefs={VERDICT_COLUMNS}
+              defaultColDef={VERDICT_DEFAULTS}
+              onGridSizeChanged={fitVerdictColumns}
+              onFirstDataRendered={fitVerdictColumns}
+              onViewportChanged={fitVerdictColumns}
+              getRowId={({ data }) => data.id}
+              isFullWidthRow={({ rowNode }) => rowNode.data?.kind !== "job"}
+              fullWidthCellRenderer={VerdictFullWidth}
+              getRowHeight={({ data }: RowHeightParams<GridRow>) => verdictRowHeight(data)}
+              onRowClicked={(event: RowClickedEvent<GridRow>) => {
+                const row = event.data;
+                if (row?.kind === "job") toggle(row.job.jobId);
+              }}
+              enableCellTextSelection={false}
+              containerStyle={{ height: "100%" }}
+            />
+          </div>
+          <div className="verdict-footer"><TotalsStrip row={totals} /></div>
+        </>
       )}
     </div>
   );

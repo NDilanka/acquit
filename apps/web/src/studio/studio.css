@@ -18,6 +18,7 @@
   .studio-flow .studio-widget { height: auto; min-height: 0; overflow: visible; }
   .studio-flow .studio-value { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
   /* Normal Grid bodies still need a scrollport minimum when their tile has no fixed height. */
+  .studio-flow .verdict-table { min-height: 240px; }
   .studio-flow .verdict-grid .ag-root-wrapper { min-height: 240px; }
   .studio-flow .changes-grid .ag-root-wrapper { min-height: 180px; }
   .studio-flow .verdict-grid .ag-header-cell-text { white-space: normal; overflow-wrap: normal; }
@@ -32,6 +33,10 @@
 .pill.break { color: var(--red); background: var(--red-bg); border-color: var(--red-line); }
 /* The verdict timeline fills its tile and scrolls inside it; the tile keeps the grid at least 240px tall. */
 .verdict-grid { flex: 1 1 auto; min-width: 0; min-height: 240px; display: flex; flex-direction: column; }
+/* Keep totals outside Grid's sticky pinned-row scrollport so rows cannot pass behind them. */
+.verdict-table { flex: 1 1 0; min-width: 0; min-height: 0; }
+.verdict-footer { flex: 0 0 auto; padding: 8px 12px; border-top: 1px solid var(--line); }
+.verdict-grid .verdict-footer .verdict-totals { height: auto; }
 .verdict-grid .ag-cell { padding: 8px; font-size: var(--text-sm); line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .verdict-grid .ag-cell-wrap-text { white-space: normal; }
 .verdict-grid .ag-header-cell { padding-left: 8px; padding-right: 8px; }
@@ -44,9 +49,11 @@
 .verdict-grid .verdict-attempt { display: flex; align-items: center; gap: 8px; height: 100%; padding-left: 24px; font-size: var(--text-xs); line-height: var(--leading-xs); min-width: 0; }
 .verdict-grid .verdict-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .verdict-grid .verdict-totals { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; height: 100%; font-size: var(--text-xs); line-height: var(--leading-xs); }
-.verdict-grid .verdict-passing { display: inline-flex; flex-direction: column; gap: 2px; vertical-align: top; }
+.verdict-grid .verdict-passing-cell .ag-cell-wrapper, .verdict-grid .verdict-passing-cell .ag-cell-value { min-width: 0; width: 100%; }
+.verdict-grid .verdict-passing { display: flex; flex-direction: column; gap: 2px; min-width: 0; width: 100%; }
+.verdict-grid .verdict-passing > .num { white-space: normal; overflow-wrap: anywhere; }
 .verdict-grid .verdict-single { margin-left: 6px; color: var(--green-text); }
-.verdict-grid .verdict-spark { display: block; color: var(--green-text); overflow: visible; }
+.verdict-grid .verdict-spark { display: block; min-width: 0; width: 100%; max-width: 96px; height: 18px; flex: 0 0 auto; color: var(--green-text); }
 .verdict-grid .verdict-spark polyline { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
 .verdict-grid .verdict-chip { display: inline-block; margin-right: 4px; padding: 0px var(--label-gap); border: 1px solid var(--line); border-radius: 4px; background: var(--surface); font-size: var(--text-xs); line-height: var(--leading-xs); max-width: 10ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
 /* Narrow tiles (<= 640px) list the jobs as cards. The list scrolls inside the tile and the totals stay pinned below it. */
