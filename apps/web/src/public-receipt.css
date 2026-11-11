@@ -1,3 +1,5 @@
 .receipt-money-rows > div { gap: var(--space-3); align-items: baseline; }
 .receipt-money-rows > div > span { min-width: 0; overflow-wrap: anywhere; }
 .receipt-money-rows .receipt-money-value { flex-shrink: 0; white-space: nowrap; overflow-wrap: normal; }
+.laser-receipt-ids > div { flex-wrap: wrap; gap: var(--space-3); align-items: flex-start; }
+.laser-receipt-ids .idchip { display: block; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
