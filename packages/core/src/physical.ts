@@ -38,6 +38,13 @@ export const LASER_CUT_WORKFLOW: PhysicalWorkflow = { vertical: LASER_VERTICAL, 
 
 const WORKFLOWS: readonly PhysicalWorkflow[] = [LASER_CUT_WORKFLOW];
 
+/**
+ * The public rules the laser checker reports by name, in the checker's own order. The judge counts a reply against this list,
+ * so a checker that drops or renames a rule is a malformed reply, never a pass.
+ */
+export const LASER_PUBLIC_RULES: readonly string[] = ["parse", "units-mm", "colours", "closed-paths", "no-duplicates", "fits-bed",
+	"outer-size", "holes", "cutouts", "engrave-inside", "min-web", "cut-order", "no-self-intersection"];
+
 /** The physical workflow a vertical names, or null for a vertical this build does not open physically. */
 export function physicalWorkflowOf(vertical: string): PhysicalWorkflow | null {
 	return WORKFLOWS.find(workflow => workflow.vertical === vertical) ?? null;
