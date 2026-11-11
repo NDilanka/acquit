@@ -10,8 +10,11 @@ import type { JobRow } from "../../../packages/core/src/job.ts";
 import { authAssertion } from "../../../packages/core/src/paypal.ts";
 import { paypalReader, PayPalHttpError, type PaypalReader } from "../../../packages/mcp/src/paypal.ts";
 
-/** How long the read may take. A read still running at this point records the check as unavailable. */
-export const PAYPAL_CHECK_TIMEOUT_MS = 5_000;
+/** How long one read may take. A read still running at this point is a timeout: it is retried, or recorded as unavailable. */
+export const PAYPAL_CHECK_TIMEOUT_MS = 10_000;
+
+/** The waits before each retry of a read that timed out, failed, or met PayPal's 5xx or 429. Three reads at most per job. */
+export const PAYPAL_CHECK_RETRY_BACKOFF_MS: readonly number[] = [2_000, 5_000];
 
 // One row per job. The outcome PENDING is the claim: it is written before the read and replaced by the answer when the read settles.
 const SCHEMA = `CREATE TABLE IF NOT EXISTS job_paypal_checks (
@@ -102,12 +105,21 @@ function failureOf(error: unknown): Answer {
 	return unavailable("READ_FAILED");
 }
 
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+/** A timeout, a failed read, and PayPal's 5xx or 429 can clear on another read. PayPal's other refusals will not. */
+function retryable(error: unknown): boolean {
+	return !(error instanceof PayPalHttpError) || error.status >= 500 || error.status === 429;
+}
+
 export type PayPalCheckPorts = {
 	readonly db: DatabaseSync;
 	/** Absent when the deployment has no PayPal credentials. Then no check starts and nothing is recorded. */
 	readonly read: OrderRead | null;
 	readonly now: () => string;
 	readonly timeoutMs?: number;
+	/** The waits before each retry. The length is the number of retries; `[]` reads once. */
+	readonly backoffMs?: readonly number[];
 	readonly log?: (line: string) => void;
 };
 
@@ -115,7 +127,7 @@ export type PayPalCheckPorts = {
  * The check's start and its reads. `start` returns at once: the read runs on its own, and its answer is recorded when
  * it settles. A job is checked once. `start` claims the job's row before it reads, so a start for a job that already has
  * a claim starts no read, whether that claim's read is running or a restart cut it off. A claim cut off by a restart is
- * recorded as unavailable and is never read again.
+ * recorded as unavailable and is never read again. A failure that may clear is retried inside that one claim.
  */
 export function createPayPalCheck(ports: PayPalCheckPorts): {
 	readonly start: (row: JobRow) => void;
@@ -124,6 +136,7 @@ export function createPayPalCheck(ports: PayPalCheckPorts): {
 	ports.db.exec(SCHEMA);
 	const log = ports.log ?? ((line: string) => console.log(line));
 	const timeoutMs = ports.timeoutMs ?? PAYPAL_CHECK_TIMEOUT_MS;
+	const backoffMs = ports.backoffMs ?? PAYPAL_CHECK_RETRY_BACKOFF_MS;
 	// The claims whose read is running in this process. A claim outside this set has no read behind it.
 	const running = new Set<string>();
 	const claimRow = ports.db.prepare(`INSERT OR IGNORE INTO job_paypal_checks
@@ -134,10 +147,20 @@ export function createPayPalCheck(ports: PayPalCheckPorts): {
 	const select = ports.db.prepare(`SELECT job_id, order_id, checked_at, outcome, order_status, capture_status,
 		held_value, held_currency, reason FROM job_paypal_checks WHERE job_id = ?`);
 
+	// One answer for the job. A failure that may clear is read again after its wait, up to one retry per backoff entry. The claim
+	// stays PENDING through every attempt, so a restart during a retry is cut off like any other claimed read.
+	async function readAnswer(orderId: string, merchant: MerchantId, read: OrderRead): Promise<Answer> {
+		for (let retry = 0; ; retry++) {
+			try { return answerOf(await within(read(orderId, merchant), timeoutMs), orderId); }
+			catch (error) {
+				if (retry === backoffMs.length || !retryable(error)) return failureOf(error);
+				await sleep(backoffMs[retry]!);
+			}
+		}
+	}
+
 	async function check(jobId: string, orderId: string, merchant: MerchantId, read: OrderRead): Promise<void> {
-		let answer: Answer;
-		try { answer = answerOf(await within(read(orderId, merchant), timeoutMs), orderId); }
-		catch (error) { answer = failureOf(error); }
+		const answer = await readAnswer(orderId, merchant, read);
 		try {
 			writeAnswer.run(ports.now(), answer.outcome, answer.orderStatus, answer.captureStatus,
 				answer.heldValue, answer.heldCurrency, answer.reason, jobId);
