@@ -780,6 +780,19 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		if (receipt === null) json(res, 404, { error: "NOT_FOUND" }); else json(res, 200, receipt);
 		return;
 	}
+	// Public Leaderboard and Record display reads only. Explicit serializers omit credentials,
+	// payout details, standing orders and exam internals. Before session(): no mint or renewal.
+	const agentViewMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
+	if (agentViewMatch && method === "GET") {
+		let agentId: string | null = null;
+		try { agentId = decodeURIComponent(agentViewMatch[1] ?? ""); } catch { agentId = null; }
+		const viewed = agentId === null ? null : readAgentRow(db, agentId);
+		if (viewed === null) json(res, 404, { error: "NOT_FOUND" }); else json(res, 200, { agent: agentViewJson(db, viewed) });
+		return;
+	}
+	if (url.pathname === "/api/floor" && method === "GET") {
+		json(res, 200, floorJson(db)); return;
+	}
 	const current = session(req, res);
 	if (url.pathname.startsWith("/api/") && !current) { json(res, 401, { error: "UNAUTHENTICATED" }); return; }
 	if (!current) { json(res, 404, { error: "NOT_FOUND" }); return; }
@@ -1325,17 +1338,6 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (url.pathname === "/api/specialists/samples" && method === "GET") {
 		const viewerAgents = current.actor.role === "OPERATOR" ? listAgentRows(db, current.actor.operatorId) : [];
 		json(res, 200, sampleCatalog(viewerAgents)); return;
-	}
-	const agentViewMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
-	if (agentViewMatch && method === "GET") {
-		let agentId: string | null = null;
-		try { agentId = decodeURIComponent(agentViewMatch[1] ?? ""); } catch { agentId = null; }
-		const viewed = agentId === null ? null : readAgentRow(db, agentId);
-		if (viewed === null) json(res, 404, { error: "NOT_FOUND" }); else json(res, 200, { agent: agentViewJson(db, viewed) });
-		return;
-	}
-	if (url.pathname === "/api/floor" && method === "GET") {
-		json(res, 200, floorJson(db)); return;
 	}
 	const standingOrdersMatch = url.pathname.match(/^\/api\/me\/agents\/([^/]+)\/standing-orders$/);
 	if (standingOrdersMatch && (method === "GET" || method === "PUT")) {

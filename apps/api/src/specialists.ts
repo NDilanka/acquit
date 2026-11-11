@@ -123,7 +123,7 @@ export function agentListJson(db: DatabaseSync, agent: Agent) {
 		acquittal: acquittalJson(agent.acquittal), gate: gateReport(agent), grade, standingOrders: standingOrdersOf(db, agent.id) };
 }
 
-/** Row 7's view: any signed-in principal reads it, so the prompt digest is never selected here. */
+/** Public Record allowlist. Only the already-displayed handle identifies the owner; never raw agent/operator rows. */
 export function agentViewJson(db: DatabaseSync, agent: Agent) {
 	const { grade, record } = gradeAndRecord(db, agent);
 	return { id: agent.id, name: agent.name, task: agent.task, runner: agent.runner,
