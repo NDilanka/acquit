@@ -1,4 +1,4 @@
-.inspector { display: grid; gap: var(--space-3); }
+.inspector { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-3); }
 .insp-intro { max-width: 100ch; margin: 0 0 var(--space-3); }
 
 /* Picker: the featured deliveries, then "More cheats". On a phone it scrolls sideways, with a fade at the edge. */
@@ -17,7 +17,7 @@
 .insp-picker-label { margin-left: var(--space-2); font-size: var(--text-xs); line-height: var(--leading-xs); font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
 
 .insp-about { display: grid; gap: var(--space-1); }
-.insp-blurb { margin: 0; max-width: 110ch; color: var(--ink-2); font-size: var(--text-ui); line-height: var(--leading-ui); }
+.insp-blurb { margin: 0; max-width: 130ch; color: var(--ink-2); font-size: var(--text-ui); line-height: var(--leading-ui); }
 .insp-blurb b { color: var(--ink); font-weight: 600; }
 .insp-honest { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin: 0; font-size: var(--text-sm); line-height: var(--leading-sm); color: var(--muted); }
 
@@ -25,7 +25,7 @@
 .insp-stage-col { display: grid; gap: var(--space-2); min-width: 0; }
 /* On a wide screen the stage takes what the window leaves, so stage, rules and verdict share one screen. */
 .insp-stage {
-  position: relative; height: clamp(300px, calc(100vh - 516px), 560px); overflow: hidden; border-radius: var(--r-card);
+  position: relative; height: clamp(300px, calc(100vh - 524px), 560px); overflow: hidden; border-radius: var(--r-card);
   background: var(--surface); border: 1px solid var(--line); touch-action: pan-y; cursor: grab;
 }
 .insp-stage-box { position: relative; min-width: 0; }
@@ -43,8 +43,8 @@
 .insp-caption .insp-caption-sub { font-size: var(--text-xs); line-height: var(--leading-xs); color: var(--muted); margin-top: 2px; }
 .insp-caption.fail { border-color: var(--red-line); }
 .insp-caption.fail p:first-child { color: var(--red); font-weight: 600; }
-.insp-caption.moment { background: var(--red-bg); border-color: var(--red-line); padding: 12px 16px; }
-.insp-caption.moment p:first-child { color: var(--red); font-weight: 600; font-size: var(--text-section); line-height: var(--leading-section); }
+.insp-caption.moment { background: var(--red-bg); border-color: var(--red-line); padding: 10px 14px; max-width: calc(100% - 24px); }
+.insp-caption.moment p:first-child { color: var(--red); font-weight: 600; font-size: var(--text-ui); line-height: var(--leading-ui); }
 .insp-caption.moment .insp-caption-sub { color: var(--ink-2); font-size: var(--text-sm); line-height: var(--leading-sm); margin-top: 4px; }
 .insp-stage-verdict {
   position: absolute; z-index: 1; top: var(--space-3); left: var(--space-3); margin: 0; padding: 4px 12px; border-radius: var(--r-pill);
@@ -102,6 +102,7 @@
 .insp-rule.sealed.pass { background: var(--green-bg); border-color: var(--green-line); }
 .insp-rule.sealed.pass .insp-rule-name { color: var(--green-text); font-weight: 600; }
 .insp-rule.sealed.fail .insp-rule-name { font-size: var(--text-ui); }
+.insp-rule-id.insp-demo { font-family: inherit; font-size: var(--text-xs); }
 .insp-envelope { display: inline-grid; place-items: center; width: 24px; height: 20px; color: var(--muted); }
 .insp-envelope svg { width: 24px; height: 20px; overflow: visible; }
 .insp-flap { transform-origin: 12px 7.5px; transition: transform var(--duration-slow) var(--ease-out); }
@@ -111,7 +112,8 @@
 .insp-envelope.fail { color: var(--red); }
 
 .insp-file, .insp-measured { margin: 0; padding: var(--space-5); }
-.insp-file-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--space-4); }
+.insp-file-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: var(--space-4); }
+.insp-file-cols > * { min-width: 0; }
 .insp-file pre {
   margin: var(--space-3) 0 0; padding: var(--space-3); max-height: 320px; overflow: auto; border-radius: var(--r-sm);
   background: var(--surface); font-family: var(--mono); font-size: var(--text-xs); line-height: var(--leading-xs); white-space: pre;
@@ -137,6 +139,7 @@
   .insp-stage { --stage-inset: 0px; }
   .insp-caption { position: static; max-width: none; margin-top: var(--space-2); padding: 8px 12px; box-shadow: none; }
   .insp-verdict.waiting { display: none; }
+  .insp-rule-id.insp-demo { grid-column: 2 / -1; white-space: normal; }
   .insp-caption p { font-size: var(--text-xs); line-height: var(--leading-xs); }
   .insp-caption.moment p:first-child { font-size: var(--text-ui); line-height: var(--leading-ui); }
   .insp-caption.moment .insp-caption-sub { font-size: var(--text-xs); line-height: var(--leading-xs); }

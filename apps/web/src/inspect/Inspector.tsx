@@ -2,6 +2,7 @@ import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { checklistOf, formatMeasured, type Checklist, type PublicRow } from "./checklist.ts";
 import type { Delivery, InspectVerdict } from "./contract.ts";
 import { onThemeChange, readPalette } from "./palette.ts";
+import { DEMO_LINE, HONEST_LINE, MOMENT, unseenName, unseenNext, unseenRunning, VERDICT_LINE, verdictDetail } from "./demo-copy.ts";
 import type { CheckerEntry } from "./registry.ts";
 import { placeOf, toDrawList, type DrawList, type Place } from "./scene-draw.ts";
 import { Stage2D } from "./Stage2D.tsx";
@@ -70,6 +71,7 @@ export function Inspector({ checker, delivery: initialId, flat = false }: Inspec
   const [speed, setSpeed] = useState<(typeof SPEEDS)[number]>(1);
   const [showFile, setShowFile] = useState(false);
   const [mode, setMode] = useState<"3d" | "2d">(() => (flat || !webglAvailable() ? "2d" : "3d"));
+  const [contextLost, setContextLost] = useState(false);
   const host = useRef<HTMLDivElement>(null);
   const stage = useRef<Stage | null>(null);
   const [stageReady, setStageReady] = useState(0);
@@ -95,8 +97,15 @@ export function Inspector({ checker, delivery: initialId, flat = false }: Inspec
     setPlaying(!reduced);
   };
 
+  // Reduced motion switched on mid-run stops the run on its finished state.
   useEffect(() => {
-    if (!playing) return;
+    if (!reduced) return;
+    setPlaying(false);
+    setT(total);
+  }, [reduced, total]);
+
+  useEffect(() => {
+    if (!playing || reduced) return;
     let raf = 0;
     let prev = performance.now();
     const tick = (now: number) => {
@@ -111,7 +120,7 @@ export function Inspector({ checker, delivery: initialId, flat = false }: Inspec
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, speed, total]);
+  }, [playing, reduced, speed, total]);
 
   // The 3D stage loads three.js in its own chunk and is rebuilt for each delivery.
   useEffect(() => {
@@ -121,7 +130,14 @@ export function Inspector({ checker, delivery: initialId, flat = false }: Inspec
     import("./stage-three.ts")
       .then(({ createThreeStage }) => {
         if (cancelled || !host.current) return;
-        stage.current = createThreeStage(host.current, run.list, readPalette(), { reducedMotion: reduced, dressing: checker.dressing });
+        stage.current = createThreeStage(host.current, run.list, readPalette(), {
+          reducedMotion: reduced,
+          dressing: checker.dressing,
+          onContextLost: () => {
+            setContextLost(true);
+            setMode("2d");
+          },
+        });
         off = onThemeChange(() => stage.current?.setPalette(readPalette()));
         setStageReady((n) => n + 1);
       })
@@ -159,7 +175,7 @@ export function Inspector({ checker, delivery: initialId, flat = false }: Inspec
         </p>
         <p className="insp-honest">
           <span className="sandbox">Simulated</span>
-          The file is checked by the real checker, running in your browser. The machine run is simulated.
+          {HONEST_LINE}
         </p>
       </div>
 
@@ -196,7 +212,9 @@ export function Inspector({ checker, delivery: initialId, flat = false }: Inspec
             onShowFile={() => setShowFile((s) => !s)}
           />
           <VerdictLine checker={checker} checks={run.checks} done={frame.verdict} />
-          {mode === "2d" && !flat && <p className="insp-note">This browser has no WebGL, so the run is drawn flat.</p>}
+          {mode === "2d" && !flat && (
+            <p className="insp-note">{contextLost ? "The browser stopped the 3D view, so the run is drawn flat." : "This browser has no WebGL, so the run is drawn flat."}</p>
+          )}
         </div>
         <Checks checker={checker} checks={run.checks} frame={frame} />
       </div>
@@ -241,8 +259,8 @@ function StageCaption({ checker, frame, checks, place, focusRow }: { checker: Ch
   if (sealedFailed && allPublicPassed)
     return (
       <div className="insp-caption moment" aria-live="polite">
-        <p>Every public rule passed. A sealed check did not.</p>
-        <p className="insp-caption-sub">The agent never sees sealed checks, so it cannot aim at them.</p>
+        <p>{MOMENT.main}</p>
+        <p className="insp-caption-sub">{MOMENT.sub}</p>
       </div>
     );
   let main: string;
@@ -252,7 +270,7 @@ function StageCaption({ checker, frame, checks, place, focusRow }: { checker: Ch
     sub = place ? `${ruleName(checker, focusRow.rule)}: marked on the part.` : `${ruleName(checker, focusRow.rule)}: the checker names no place on the part for this rule.`;
   } else if (frame.phase === "trace") main = checker.runCaption;
   else if (frame.phase === "drop") main = "The cut-out pieces fall away and the finished part is left.";
-  else if (frame.phase === "sealed") main = frame.sealedChecking !== null ? "Opening a sealed check. What it checks is not shown." : "Every public rule passed. Now the sealed checks.";
+  else if (frame.phase === "sealed") main = frame.sealedChecking !== null ? unseenRunning() : unseenNext();
   else if (frame.phase === "checks") main = "Checking the public rules.";
   else main = checks.pass ? "Every rule passed." : "The checker found a problem.";
   return (
@@ -282,7 +300,7 @@ const PHASE_WORDS: Readonly<Record<Frame["phase"], string>> = {
   trace: "machine run",
   drop: "pieces falling away",
   checks: "public rules",
-  sealed: "sealed checks",
+  sealed: "the check the agent never sees",
   verdict: "verdict",
 };
 
@@ -355,8 +373,7 @@ const Checks = memo(function Checks({ checker, checks, frame }: { checker: Check
       {sealedCount > 0 && (
         <div className={`insp-sealed${frame.sealedOpen ? " open" : ""}`}>
           <div className="insp-checks-head">
-            <h2 className="insp-h">Sealed checks</h2>
-            <p className="insp-count">{sealedCount === 1 ? "1 sealed check" : `${sealedCount} sealed checks`}</p>
+            <h2 className="insp-h">{unseenName(sealedCount)}</h2>
           </div>
           <ol className="insp-rules">
             {checks.sealed.map((ok, i) => {
@@ -366,8 +383,8 @@ const Checks = memo(function Checks({ checker, checks, frame }: { checker: Check
               return (
                 <li key={i} className={`insp-rule sealed ${state}`}>
                   <Envelope state={state} />
-                  <span className="insp-rule-name">{shown ? (ok ? "Sealed check passed" : "Sealed check failed") : opening ? "Opening sealed check" : "Sealed check"}</span>
-                  <span className="insp-rule-id">{sealedCount > 1 ? `${i + 1} of ${sealedCount}` : "content not shown"}</span>
+                  <span className="insp-rule-name">{shown ? (ok ? "Passed" : "Failed") : opening ? "Running" : "Not run yet"}</span>
+                  <span className="insp-rule-id insp-demo">{sealedCount > 1 ? `${i + 1} of ${sealedCount}. ${DEMO_LINE}` : DEMO_LINE}</span>
                 </li>
               );
             })}
@@ -392,9 +409,9 @@ function Mark({ state }: { state: "pending" | "pass" | "fail" }) {
   );
 }
 
-/** A sealed envelope: closed while waiting, its flap lifting while it is checked, open in the result's colour. */
+/** An envelope: closed while waiting, its flap lifting while it runs, open in the result's colour. */
 function Envelope({ state }: { state: "pending" | "opening" | "pass" | "fail" }) {
-  const label = { pending: "Sealed, not run yet", opening: "Being checked", pass: "Passed", fail: "Failed" }[state];
+  const label = { pending: "Not run yet", opening: "Running", pass: "Passed", fail: "Failed" }[state];
   return (
     <span className={`insp-envelope ${state}`} role="img" aria-label={label}>
       <svg viewBox="0 0 24 20" aria-hidden="true">
@@ -412,14 +429,10 @@ const VerdictLine = memo(function VerdictLine({ checker, checks, done }: { check
   const sealedFailed = checks.sealed.filter((ok) => !ok).length;
   const n = checks.publicRows.length;
   const s = checks.sealed.length;
-  const detail = checks.pass
-    ? `All ${n} public rules passed${s ? `, and ${s === 1 ? "the sealed check" : `all ${s} sealed checks`} too` : ""}.`
-    : failed
-      ? `${ruleName(checker, failed.rule)} failed. ${failText(checker, failed)}`
-      : `Every public rule passed, and ${sealedFailed === 1 ? "a sealed check" : `${sealedFailed} sealed checks`} failed.`;
+  const detail = failed ? `${ruleName(checker, failed.rule)} failed. ${failText(checker, failed)}` : verdictDetail(n, s, sealedFailed, checks.pass);
   return (
     <div className={`insp-verdict ${checks.pass ? "pass" : "fail"}`} role="status">
-      <p className="insp-verdict-line">{checks.pass ? "Passed. Payment could be released." : "Rejected. No payment."}</p>
+      <p className="insp-verdict-line">{checks.pass ? VERDICT_LINE.pass : VERDICT_LINE.fail}</p>
       <p className="insp-verdict-detail">{detail}</p>
     </div>
   );

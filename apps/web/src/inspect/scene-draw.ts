@@ -192,7 +192,7 @@ export type Place = { readonly x: number; readonly y: number; readonly radius: n
 
 /**
  * Where a finding points on the part. The finding's own `at` wins; otherwise the box around the paths it names.
- * A hidden finding never has a place: showing one would give away the sealed sample.
+ * A hidden finding never has a place: on a real job its points stay on the server, so the demonstration draws none.
  */
 export function placeOf(list: DrawList, finding: InspectFinding): Place | null {
   if (finding.hidden) return null;

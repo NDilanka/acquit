@@ -4,6 +4,7 @@ import type { Palette } from "./palette.ts";
 import type { DrawItem, DrawList, Place, Stroke } from "./scene-draw.ts";
 import type { Frame } from "./timeline.ts";
 import { boxCorners, centredTarget, fitDistance, type V3 } from "./camera-fit.ts";
+import { watchContextLoss } from "./stage-safety.ts";
 import type { Dressing } from "./registry.ts";
 
 export type StageInput = {
@@ -63,7 +64,7 @@ function extrude(shape: THREE.Shape, depth: number): THREE.BufferGeometry {
   return g;
 }
 
-export function createThreeStage(host: HTMLElement, list: DrawList, initial: Palette, options: { reducedMotion: boolean; dressing: Dressing }): Stage {
+export function createThreeStage(host: HTMLElement, list: DrawList, initial: Palette, options: { reducedMotion: boolean; dressing: Dressing; onContextLost?: () => void }): Stage {
   const laser = options.dressing === "laser";
   let palette = initial;
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "low-power" });
@@ -73,6 +74,7 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
   canvas.className = "insp-canvas";
   canvas.setAttribute("aria-hidden", "true");
   host.appendChild(canvas);
+  const offContextLoss = watchContextLoss(canvas, () => options.onContextLost?.());
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(FOV, 1, 1, 6000);
@@ -458,6 +460,8 @@ export function createThreeStage(host: HTMLElement, list: DrawList, initial: Pal
       window.removeEventListener("pointercancel", onUp);
       host.removeEventListener("wheel", onWheel);
       host.removeEventListener("keydown", onKey);
+      // Off before forceContextLoss below, which fires the same event.
+      offContextLoss();
       for (const o of owned) o.dispose();
       renderer.dispose();
       renderer.forceContextLoss();

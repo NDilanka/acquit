@@ -28,7 +28,7 @@ test("the honest delivery passes and every cheat fails exactly one rule, as the 
 
 test("exactly one cheat passes every public rule and is caught only by a sealed check", () => {
   const sealedOnly = LASER_DELIVERIES.filter((d) => caughtOnlyBySealed(checklistOf(d.run())));
-  assert.deepEqual(sealedOnly.map((d) => d.title), ["Passes every public rule, fails a hidden one"]);
+  assert.deepEqual(sealedOnly.map((d) => d.title), ["Passes every public rule"]);
 });
 
 test("every public failure the checker names a path for can be marked on the part", () => {
@@ -102,6 +102,14 @@ test("the planned cut time reads as an estimate rounded to one decimal", () => {
   });
   assert.deepEqual(formatMeasured("minWebMm", 4.3612), { label: "Min web", value: "4.36", unit: "mm" });
   assert.deepEqual(formatMeasured("cutPaths", 6), { label: "Cut paths", value: "6", unit: null });
+});
+
+test("the README's embedding example names a registered workflow", async () => {
+  const { readFileSync } = await import("node:fs");
+  const readme = readFileSync(new URL("./README.md", import.meta.url), "utf8");
+  const ids = [...readme.matchAll(/<CheckerInspector workflow="([^"]+)"/g)].map((m) => m[1]!);
+  assert.ok(ids.length > 0);
+  for (const id of ids) assert.notEqual(checkerFor(id), null, id);
 });
 
 test("the registry offers the laser checker by its workflow", () => {

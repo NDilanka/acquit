@@ -9,8 +9,8 @@ const LASER_FILES: readonly { readonly file: string; readonly title: string; rea
   { file: "honest.svg", title: "Honest delivery", blurb: "The panel drawn as the job asks: kerf allowed for, holes in place, label inside its box." },
   {
     file: "fraud-hidden-notch.svg",
-    title: "Passes every public rule, fails a hidden one",
-    blurb: "The window is the right size and clear of every edge, but it sits where the buyer needs solid material. Only a sealed check knows where that is.",
+    title: "Passes every public rule",
+    blurb: "The window sits where the buyer needs solid material. No public rule covers that, but the check the agent never sees does.",
   },
   { file: "fraud-no-kerf.svg", title: "Skipped kerf compensation", blurb: "The outline is drawn at the finished size, so the beam's width eats into the part." },
   { file: "fraud-hole-moved.svg", title: "Mounting hole moved 1 mm", blurb: "One of the four mounting holes is drawn 1 mm off its position." },
@@ -131,7 +131,7 @@ export const LASER_CHECKER: CheckerEntry = {
   specFileName: "enclosure-panel.spec.json",
   specText: SAMPLE_TEXT["enclosure-panel.spec.json"] ?? "",
   deliveries: LASER_DELIVERIES,
-  featured: ["honest", "fraud-hidden-notch", "fraud-no-kerf", "fraud-hole-moved", "fraud-thin-web", "fraud-oversize-bed"],
+  featured: ["honest", "fraud-hidden-notch", "fraud-no-kerf", "fraud-hole-moved", "fraud-thin-web"],
   ruleNames: LASER_RULE_NAMES,
   failCaption: (finding: InspectFinding) => CAPTIONS[finding.rule]?.(finding.message) ?? null,
   measured: {
