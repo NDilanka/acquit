@@ -4,7 +4,18 @@
 .empty-story h2 { margin: 0; }
 .empty-story p { margin: 0; }
 .studio-host { width: 100%; min-width: 0; height: max(600px, calc(100vh - 240px)); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.studio-host .ag-studio-root-canvas { container: studio-canvas / inline-size; }
+/* Studio normally positions fixed tracks absolutely. Reflow only the compact reading view, not the
+   editor or saved coordinates. Query the canvas itself so opening/resizing Ask also reflows tiles.
+   The !important declarations override Studio's inline canvas height and widget width. */
+@container studio-canvas (max-width: 1120px) {
+  .studio-flow .ag-studio-layout-canvas { height: auto !important; min-height: 0 !important; }
+  .studio-flow .ag-studio-layout-content-container:has(> .ag-studio-layout-widget) { position: relative; inset: auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+  .studio-flow .ag-studio-layout-widget { position: static; width: auto !important; min-width: 0; min-height: 160px; }
+  .studio-flow .ag-studio-layout-widget:not(:has([data-widget-kind="stat"])) { grid-column: 1 / -1; }
+}
 .studio-widget { height: 100%; display: flex; flex-direction: column; gap: var(--label-gap); padding: 8px 12px; font-family: var(--sans); color: var(--ink); overflow: auto; }
+.studio-widget > .eyebrow { min-width: 0; white-space: normal; overflow-wrap: normal; hyphens: none; overflow: hidden; text-overflow: ellipsis; }
 .studio-widget .rows { margin: 4px 0 var(--label-gap); }
 .studio-widget .rows div { padding: 8px 12px; }
 .studio-widget .pill { align-self: flex-start; }
@@ -58,7 +69,7 @@
 .explain-open { align-self: flex-start; }
 /* A KPI tile's Explain shares the label's row, so the value and its note keep the tile's height on a phone. */
 .studio-widget:has(> .explain-open) { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--space-4); align-content: start; }
-.studio-widget:has(> .explain-open) > .eyebrow { grid-column: 1; grid-row: 1; min-width: 0; overflow-wrap: anywhere; }
+.studio-widget:has(> .explain-open) > .eyebrow { grid-column: 1; grid-row: 1; }
 .studio-widget:has(> .explain-open) > .explain-open { grid-column: 2; grid-row: 1; align-self: center; }
 .studio-widget:has(> .explain-open) > :not(.eyebrow):not(.explain-open) { grid-column: 1 / -1; }
 .explain-dialog { width: min(560px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: 85vh; overflow-y: auto; margin: auto; padding: 16px 16px;

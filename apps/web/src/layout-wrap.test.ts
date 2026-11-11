@@ -48,9 +48,30 @@ test("sample tile labels retain a gap from Explain even in narrow desktop column
   const studio = readFileSync(new URL("./studio/studio.css",import.meta.url),"utf8");
   const lines = studio.split("\n");
   const grid = lines.find(line => line.startsWith(".studio-widget:has(> .explain-open) {")) ?? "";
-  const label = lines.find(line => line.startsWith(".studio-widget:has(> .explain-open) > .eyebrow {")) ?? "";
+  const label = lines.find(line => line.startsWith(".studio-widget > .eyebrow {")) ?? "";
   assert.match(grid,/grid-template-columns: minmax\(0, 1fr\) auto/);
   assert.match(grid,/column-gap: var\(--space-4\)/);
-  assert.match(label,/min-width: 0; overflow-wrap: anywhere/);
+  assert.match(label,/min-width: 0/);
+  assert.match(label,/white-space: normal/);
+  assert.match(label,/overflow-wrap: normal/);
+  assert.match(label,/hyphens: none/);
+  assert.match(label,/overflow: hidden; text-overflow: ellipsis/);
+  const labelRules = lines.filter(line => line.includes(".studio-widget") && line.includes("> .eyebrow"));
+  for (const rule of labelRules) assert.doesNotMatch(rule,/overflow-wrap:\s*(anywhere|break-word)|word-break:/);
   assert.match(studio,/\.studio-widget:has\(> \.explain-open\) > \.explain-open \{ grid-column: 2; grid-row: 1;/);
+});
+
+test("compact viewing wraps 240px tiles by canvas width, including when Ask narrows it", () => {
+  const studio = readFileSync(new URL("./studio/studio.css",import.meta.url),"utf8");
+  const page = readFileSync(new URL("./studio/StudioPage.tsx",import.meta.url),"utf8");
+  const widgets = readFileSync(new URL("./studio/dashboards.tsx",import.meta.url),"utf8");
+  assert.match(studio,/\.studio-host \.ag-studio-root-canvas \{ container: studio-canvas \/ inline-size; \}/);
+  assert.match(studio,/@container studio-canvas \(max-width: 1120px\)/);
+  assert.match(studio,/\.studio-flow \.ag-studio-layout-canvas \{ height: auto !important; min-height: 0 !important; \}/);
+  assert.match(studio,/\.studio-flow \.ag-studio-layout-content-container:has\(> \.ag-studio-layout-widget\) \{ position: relative; inset: auto; display: grid; grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 240px\), 1fr\)\); \}/);
+  assert.match(studio,/\.studio-flow \.ag-studio-layout-widget \{ position: static; width: auto !important; min-width: 0; min-height: 160px; \}/);
+  assert.match(studio,/\.studio-flow \.ag-studio-layout-widget:not\(:has\(\[data-widget-kind="stat"\]\)\) \{ grid-column: 1 \/ -1; \}/);
+  assert.match(page,/className=\{`studio-host\$\{mode === "view" \? " studio-flow" : ""\}`\}/);
+  assert.match(widgets,/function labelled\(\{ id, comp: Body, label, kind \}: Spec\)/);
+  assert.match(widgets,/data-widget-kind=\{kind\}/);
 });
