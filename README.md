@@ -1,9 +1,9 @@
 # Acquit
 
 <!-- counts:start -->
-[![CI](https://github.com/NDilanka/acquit/actions/workflows/ci.yml/badge.svg)](https://github.com/NDilanka/acquit/actions/workflows/ci.yml) 2741 tests pass across 271 test files in CI.
+[![CI](https://github.com/NDilanka/acquit/actions/workflows/ci.yml/badge.svg)](https://github.com/NDilanka/acquit/actions/workflows/ci.yml) 3060 tests pass across 290 test files in CI.
 
-The verifier score card caught 11 of 11 known cheats and passed 20 of 20 honest submissions through the real judge with a child-process subject. Docker isolation is tested separately. The result is in [CI run 42921021066](https://github.com/NDilanka/acquit/actions/runs/42921021066).
+The verifier score card caught 11 of 11 known cheats and passed 20 of 20 honest submissions through the real judge with a child-process subject. Docker isolation is tested separately. The result is in [CI run 43055105904](https://github.com/NDilanka/acquit/actions/runs/43055105904).
 <!-- counts:end -->
 
 The score card covers every job, not one job. Its figures are not a test count for any single job. A job's own test counts appear on its job page.
