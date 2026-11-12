@@ -17,6 +17,7 @@ import {
 	circlePolygon,
 	dist,
 	pointInPolygon,
+	pointSegmentDistance,
 	polygonDistance,
 	rectPolygon,
 	ROUNDOFF,
@@ -42,6 +43,7 @@ type TrackGeo = {
 	readonly a: Vec2;
 	readonly b: Vec2;
 	readonly width: number;
+	readonly net: string; // the net number as written: "" when absent, "0" when unconnected
 	readonly box: Box;
 	readonly length: number;
 	readonly slop: number;
@@ -242,12 +244,35 @@ function describeAt(p: Vec2): string {
 	return `(${fmt(p[0])}, ${fmt(p[1])})`;
 }
 
+/** A plated drill: its centre, diameter, net number, and whether it is a via's (a pad's is not). */
+type Plate = {
+	readonly center: Vec2;
+	readonly drill: number;
+	readonly name: string;
+	readonly net: string;
+	readonly via: boolean;
+};
+
 /** The drill a copper item carries: a via's bore, or a plated pad's. Undefined for any other item. */
-function plateDrillOf(g: Geo): { center: Vec2; drill: number; name: string } | undefined {
+function plateDrillOf(g: Geo): Plate | undefined {
 	if (g.kind !== "poly") return undefined;
-	if (g.via) return { center: g.via.at, drill: g.via.drill, name: `the via at ${describeAt(g.via.at)}` };
+	if (g.via) {
+		return {
+			center: g.via.at,
+			drill: g.via.drill,
+			name: `the via at ${describeAt(g.via.at)}`,
+			net: g.via.net,
+			via: true,
+		};
+	}
 	if (g.pad && g.pad.drill !== undefined) {
-		return { center: g.pad.center, drill: g.pad.drill, name: `the drill of pad ${g.pad.id}` };
+		return {
+			center: g.pad.center,
+			drill: g.pad.drill,
+			name: `the drill of pad ${g.pad.id}`,
+			net: g.pad.net,
+			via: false,
+		};
 	}
 	return undefined;
 }
@@ -265,10 +290,28 @@ function wiredThrough(t: TrackGeo, center: Vec2, radius: number): boolean {
 }
 
 /**
+ * A straight track of the via's own net that runs across the via's drill, with both ends outside it. The drill cuts the
+ * track in two, but each half still meets the via's copper round the bore, so the net stays whole. Only vias qualify:
+ * a pad's copper may be broken by its own drill, so nothing ensures each half still meets the pad. A net of "" or "0"
+ * is no net, so it never counts as the via's own.
+ */
+function crossesOwnVia(t: TrackGeo, plate: Plate): boolean {
+	if (!plate.via || t.slop > 0) return false;
+	if (plate.net === "" || plate.net === "0" || t.net !== plate.net) return false;
+	const radius = plate.drill / 2;
+	return (
+		dist(t.a, plate.center) > radius &&
+		dist(t.b, plate.center) > radius &&
+		pointSegmentDistance(plate.center, t.a, t.b) < radius
+	);
+}
+
+/**
  * The first plated drill that cuts another item, as a parse message, or undefined. A via's bore and a plated pad's
  * bore remove copper on every layer, so no other item may reach into one, whatever its net. The drilled item's own
- * copper is exempt, and so is a track wired through the drill's centre. Non-plated holes are clearance checks instead.
- * This runs before connectivity, so no contact is credited through copper a drill removes.
+ * copper is exempt, and so is a track wired through the drill's centre, and a same-net track crossing a via (see
+ * crossesOwnVia). Non-plated holes are clearance checks instead. This runs before connectivity, so no contact is
+ * credited through copper a drill removes.
  */
 function plateBoreCut(geos: readonly Geo[], budget: Budget): string | undefined {
 	for (const owner of geos) {
@@ -278,7 +321,7 @@ function plateBoreCut(geos: readonly Geo[], budget: Budget): string | undefined 
 		const bore = drillGeo(plate.center, plate.drill);
 		for (const g of geos) {
 			if (g === owner) continue;
-			if (g.kind === "track" && wiredThrough(g, plate.center, radius)) continue;
+			if (g.kind === "track" && (wiredThrough(g, plate.center, radius) || crossesOwnVia(g, plate))) continue;
 			if (boxGap(g.box, bore.box) > ROUNDOFF + g.slop + bore.slop) continue;
 			if (!take(budget, edgesOf(g) * edgesOf(bore))) return undefined;
 			if (gap(g, bore) - (g.slop + bore.slop) <= ROUNDOFF) {
@@ -408,7 +451,8 @@ function placementMismatch(board: Board, spec: Spec): Mismatch | undefined {
 	}
 	for (const part of spec.parts) {
 		const [fp, ...more] = board.footprints.filter(f => f.ref === part.ref);
-		if (!fp) return { message: `Part ${part.ref} is missing from the board.` };
+		// The spec's placement stands in for the missing footprint, so the camera still has somewhere to point.
+		if (!fp) return { message: `Part ${part.ref} is missing from the board.`, at: part.at };
 		if (more.length > 0) {
 			return { message: `Part ${part.ref} is on the board ${more.length + 1} times.`, at: more[0]?.at };
 		}
@@ -447,6 +491,7 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 			a: t.a,
 			b: t.b,
 			width: t.width,
+			net: t.net,
 			box: boxOf([t.a, t.b], t.width / 2),
 			length: dist(t.a, t.b),
 			slop: t.slop,
@@ -508,12 +553,11 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 				message: "The board outline is missing or does not close.",
 			});
 		} else if (Math.abs(boardW - spec.board.size[0]) > tol || Math.abs(boardH - spec.board.size[1]) > tol) {
-			findings.push({
-				rule: "outline",
-				ok: false,
-				hidden: false,
-				message: `The board outline is ${fmt(boardW)} by ${fmt(boardH)} mm; the spec asks for ${fmt(spec.board.size[0])} by ${fmt(spec.board.size[1])} mm.`,
-			});
+			// The outline's lower-left corner: a point on the outline, so the camera can find the board.
+			const got = `${fmt(boardW)} by ${fmt(boardH)} mm`;
+			const want = `${fmt(spec.board.size[0])} by ${fmt(spec.board.size[1])} mm`;
+			const corner = bbox ? ([bbox[0], bbox[1]] as Vec2) : undefined;
+			findings.push(missingFinding("outline", `The board outline is ${got}; the spec asks for ${want}.`, corner, TOP_Z));
 		} else {
 			findings.push(okFinding("outline", "The board outline is closed and matches the spec size."));
 		}
@@ -640,6 +684,8 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		let bad: string | undefined;
 		let at: Vec2 | undefined;
 		const netsByRoot = new Map<number, Set<string>>();
+		// The first pad of each net in each component: the two pads a short joins are where the camera should look.
+		const firstPadOf = new Map<number, Map<string, string>>();
 		for (const [pad, net] of expectedNet) {
 			const idx = padGeo.get(pad);
 			if (idx === undefined) continue;
@@ -647,14 +693,24 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 			const set = netsByRoot.get(root) ?? new Set<string>();
 			set.add(net);
 			netsByRoot.set(root, set);
+			const firsts = firstPadOf.get(root) ?? new Map<string, string>();
+			if (!firsts.has(net)) firsts.set(net, pad);
+			firstPadOf.set(root, firsts);
 		}
 		for (const [root, nets] of netsByRoot) {
 			if (nets.size > 1) {
 				const names = [...nets].sort();
 				bad = `Nets ${names[0]} and ${names[1]} touch through copper.`;
-				const idx = geos.findIndex((_, i) => comp[i] === root && geos[i]?.kind === "poly");
-				const g = geos[idx];
-				at = g ? representative(g) : undefined;
+				const firsts = firstPadOf.get(root);
+				const pa = firsts?.get(names[0] as string);
+				const pb = firsts?.get(names[1] as string);
+				const ga = pa === undefined ? undefined : geos[padGeo.get(pa) as number];
+				const gb = pb === undefined ? undefined : geos[padGeo.get(pb) as number];
+				if (ga && gb) {
+					const p = representative(ga);
+					const q = representative(gb);
+					at = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+				}
 				break;
 			}
 		}
@@ -833,8 +889,8 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		);
 	}
 
-	// Hidden checks: flying-probe pairs, and any tighter clearance. These carry no positions in their messages.
-	const probeEntries: { a: Vec2; b: Vec2; za: number; zb: number; expect: "continuity" | "isolation"; ok: boolean }[] = [];
+	// Hidden checks: flying-probe pairs, and any tighter clearance. These carry no positions in their messages,
+	// and the scene never shows them: the probes live only in the hidden sample, not in anything returned.
 	if (hidden) {
 		let failed: { expect: "continuity" | "isolation" } | undefined;
 		let unusable = false;
@@ -850,18 +906,6 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 			const connected = comp[ia] === comp[ib];
 			const ok = (probe.expect === "continuity") === connected;
 			if (!ok && !failed) failed = { expect: probe.expect };
-			const ga = geos[ia];
-			const gb = geos[ib];
-			if (ga && gb && ga.kind === "poly" && gb.kind === "poly") {
-				probeEntries.push({
-					a: representative(ga),
-					b: representative(gb),
-					za: zOf(ga.layers.includes("F.Cu") ? "F.Cu" : ga.layers[0]),
-					zb: zOf(gb.layers.includes("F.Cu") ? "F.Cu" : gb.layers[0]),
-					expect: probe.expect,
-					ok,
-				});
-			}
 		}
 		findings.push(
 			unusable
@@ -1006,7 +1050,6 @@ export function verify(spec: Spec, artefact: string, hidden?: HiddenSample): Ver
 		size: [round(boardW), round(boardH), TOP_Z],
 		stock: { size: [round(boardW), round(boardH), TOP_Z], material: "FR4" },
 		paths,
-		probes: probeEntries.map(p => ({ a: [p.a[0], p.a[1], p.za], b: [p.b[0], p.b[1], p.zb], expect: p.expect, ok: p.ok })),
 	};
 
 	// A scan that ran out of budget saw only part of the board, so no verdict is given on it.

@@ -6,8 +6,9 @@ import { verify } from "../src/verify.ts";
 import type { HiddenSample, Verdict } from "../src/types.ts";
 
 // A plated bore, a via's drill or a plated pad's drill, removes the copper inside it. No other item may reach into it,
-// whatever its net. A track may end at a bore's centre only as the wiring of that via or pad. Each board here is the
-// honest board with one change.
+// whatever its net. A track may end at a bore's centre only as the wiring of that via or pad, and a track of the via's
+// own net may run across a via's drill (see via-track-crossing.test.ts). Each board here is the honest board with one
+// change.
 
 const spec = (() => {
 	const r = validateSpec(JSON.parse(SAMPLE_SPEC_JSON));
@@ -68,11 +69,11 @@ for (const c of cases) {
 	});
 }
 
-test("a track that runs through a via's drill, rather than ending in it, fails the parse", () => {
-	// The LED track runs along y = 103. A via centred on it at x = 125 has its bore across the track's middle.
-	const v = verdictFor(edit(LED_RUN, `${LED_RUN} ${viaText([125, 103], 0.6, 0.3, 4)}`));
+test("a track of another net that runs through a via's drill fails the parse", () => {
+	// The LED track (net 4) runs along y = 103. A net 1 via centred on it at x = 125 has its bore across the track's middle.
+	const v = verdictFor(edit(LED_RUN, `${LED_RUN} ${viaText([125, 103], 0.6, 0.3, 1)}`));
 	assert.equal(v.pass, false);
-	assert.ok(parseMessage(v) !== undefined, "a track cut by a via drill must fail the parse");
+	assert.ok(parseMessage(v) !== undefined, "a track cut by another net's via drill must fail the parse");
 });
 
 test("a via on the end of its own track is wired through its bore and passes the parse", () => {
