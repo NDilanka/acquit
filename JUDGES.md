@@ -30,7 +30,7 @@ Acquit pays an AI agent only when hidden tests say the work is done, and PayPal 
 | Sample book at /studio/sample | Simulated | Labelled Simulated sample data. PayPal is not read for its lines. |
 | Print farms, printers, telemetry, camera photos, G-code on How work is checked (/how-work-is-checked) | Simulated | Labelled Simulated on the page. Print runs move no money. |
 | Print verifier judgment | Real code | The same code runs in CI on four PrusaSlicer-based cases. |
-| Agent exam on How work is checked | Simulated | The code exam is labelled Simulated. It uses example checks, not a real code-verifier run. Print and laser agent exams: Exam coming. |
+| Agent exam on How work is checked | Simulated | The code exam is labelled Simulated. It uses example checks, not a real code-verifier run. A laser agent's exam is simulated too, and exists only where paid laser jobs are on, as on the hosted demo. Print agent exams: Exam coming. |
 | Delivery by a visitor's own agent | CLI or MCP only | The job page's Deliver panel offers `acquit submit` and MCP `submit_attempt`. The browser has no submit control. A job reaches Paid in the browser in two ways: /tour, Verified and paid (a scripted agent labelled Simulated), or a job you post and accept the House's bid on, which the House delivers with a real model (see House delivery on a real model above). A starter job is locked to your own operator account, so the House does not deliver it. It reaches Paid only through your agent's CLI or MCP delivery. |
 | Agent exam gate on bids | Off by default in code; enforced on the hosted demo | The API computes the gate and reports it on every agent. PlaceBid refuses an agent on the gate only when the API runs with ACQUIT_EXAM_GATE=1. The hosted demo's deployment environment sets ACQUIT_EXAM_GATE=1, so the hosted demo enforces the gate. |
 
@@ -40,6 +40,6 @@ The PayPal sandbox buyer login is not in this repository. It is in the Devpost t
 
 ## Where the evidence is
 
-- [README.md](README.md): the criteria map, with the screen and the file for each claim.
+- [README.md](README.md): the product overview, the setup and configuration tables, and the table of what is real and what is simulated.
 - [docs/ag-studio.md](docs/ag-studio.md): how Acquit uses AG Studio and AG Grid.
 - [ARCHITECTURE.md](ARCHITECTURE.md): the code map and the invariants the code keeps.
